@@ -303,6 +303,8 @@ bool App::init(int width, int height, const char* title) {
         return false;
     }
 
+    scanAvailableMonitors();
+
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -316,6 +318,12 @@ bool App::init(int width, int height, const char* title) {
         glfwTerminate();
         return false;
     }
+
+    // Remembered as the "restore to windowed" geometry if fullscreen_ turns
+    // out to be enabled once settings load below (or is turned on later).
+    windowedWidth_ = width;
+    windowedHeight_ = height;
+    glfwGetWindowPos(window_, &windowedX_, &windowedY_);
 
     glfwMakeContextCurrent(window_);
     glfwSwapInterval(1);  // vsync
@@ -377,6 +385,8 @@ bool App::init(int width, int height, const char* title) {
     loadedSettings.volume = volume_;
     loadedSettings.videoScaleModeIndex = videoScaleModeIndex_;
     loadedSettings.aspectOverrideIndex = aspectOverrideIndex_;
+    loadedSettings.fullscreen = fullscreen_;
+    loadedSettings.monitorIndex = monitorIndex_;
     loadSettings(configPath_, loadedSettings);
 
     fontSizePx_ = std::clamp(loadedSettings.fontSizePx, kFontSizeMin, kFontSizeSafetyCeiling);
@@ -425,6 +435,11 @@ bool App::init(int width, int height, const char* title) {
     aspectOverrideIndex_ =
         ((loadedSettings.aspectOverrideIndex % aspectRatioCount) + aspectRatioCount) % aspectRatioCount;
     mpv_.setAspectOverride(kAspectRatioValues[static_cast<size_t>(aspectOverrideIndex_)]);
+    const int monitorChoiceCount = static_cast<int>(monitorChoiceNames_.size());
+    monitorIndex_ = std::clamp(loadedSettings.monitorIndex, 0, monitorChoiceCount - 1);
+    if (loadedSettings.fullscreen) {
+        applyFullscreen(true);
+    }
 
     blitProgram_ = loadShaderProgram(dir + "/shaders/passthrough.vert", dir + "/shaders/blit.frag");
     if (!blitProgram_) {
@@ -464,6 +479,53 @@ void App::setMediaRoots(std::vector<std::string> paths) {
     if (!paths.empty()) {
         mediaRoots_ = std::move(paths);
     }
+}
+
+void App::applyFullscreen(bool enable) {
+    if (!window_) {
+        return;
+    }
+    if (enable) {
+        if (!fullscreen_) {
+            // Remember where the window was so turning fullscreen back off
+            // restores it here, not at some arbitrary GLFW default spot.
+            glfwGetWindowPos(window_, &windowedX_, &windowedY_);
+            glfwGetWindowSize(window_, &windowedWidth_, &windowedHeight_);
+        }
+        GLFWmonitor* monitor = resolveMonitor();
+        if (monitor) {
+            const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+            glfwSetWindowMonitor(window_, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
+        }
+    } else {
+        glfwSetWindowMonitor(window_, nullptr, windowedX_, windowedY_, windowedWidth_, windowedHeight_, 0);
+    }
+    fullscreen_ = enable;
+}
+
+void App::scanAvailableMonitors() {
+    monitorChoiceNames_.clear();
+    monitorChoiceNames_.push_back("Primary");
+
+    int count = 0;
+    GLFWmonitor** monitors = glfwGetMonitors(&count);
+    for (int i = 0; i < count; ++i) {
+        const char* name = glfwGetMonitorName(monitors[i]);
+        monitorChoiceNames_.push_back(name ? name : ("Monitor " + std::to_string(i + 1)));
+    }
+}
+
+GLFWmonitor* App::resolveMonitor() const {
+    if (monitorIndex_ <= 0) {
+        return glfwGetPrimaryMonitor();
+    }
+    int count = 0;
+    GLFWmonitor** monitors = glfwGetMonitors(&count);
+    const int i = monitorIndex_ - 1;
+    if (i < 0 || i >= count) {
+        return glfwGetPrimaryMonitor();  // e.g. that monitor was unplugged since being persisted
+    }
+    return monitors[i];
 }
 
 void App::scanAvailableFonts() {
@@ -552,6 +614,8 @@ void App::saveCurrentSettings() const {
     settings.volume = volume_;
     settings.videoScaleModeIndex = videoScaleModeIndex_;
     settings.aspectOverrideIndex = aspectOverrideIndex_;
+    settings.fullscreen = fullscreen_;
+    settings.monitorIndex = monitorIndex_;
     saveSettings(configPath_, settings);
 }
 
@@ -1252,6 +1316,22 @@ std::vector<App::SettingsRowDesc> App::buildSettingsRows() {
 
     std::vector<SettingsRowDesc> rows;
 
+    SettingsRowDesc fullscreenRow = boolRow("Fullscreen", &fullscreen_, "ON", "OFF");
+    fullscreenRow.onBoolChanged = [this]() { applyFullscreen(fullscreen_); };
+    rows.push_back(fullscreenRow);
+
+    SettingsRowDesc monitorRow;
+    monitorRow.type = SettingsRowType::Enum;
+    monitorRow.label = "Monitor";
+    monitorRow.enumPtr = &monitorIndex_;
+    monitorRow.enumNames = &monitorChoiceNames_;
+    monitorRow.onEnumChanged = [this]() {
+        if (fullscreen_) {
+            applyFullscreen(true);  // move the fullscreen window to the newly selected monitor right away
+        }
+    };
+    rows.push_back(monitorRow);
+
     SettingsRowDesc fontSizeRow =
         intRow("Font Size", &fontSizePx_, kFontSizeMin, kFontSizeSafetyCeiling, kFontSizeStep, " px");
     fontSizeRow.onIntChanged = [this](int v) {
@@ -1471,6 +1551,9 @@ void App::adjustSettingsRow(SettingsRowDesc& row, int direction) {
             break;
         case SettingsRowType::Bool:
             *row.boolPtr = !*row.boolPtr;
+            if (row.onBoolChanged) {
+                row.onBoolChanged();
+            }
             break;
         case SettingsRowType::Enum: {
             const int n = static_cast<int>(row.enumNames->size());

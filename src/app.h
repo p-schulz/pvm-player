@@ -9,6 +9,7 @@
 #include "ui/menu.h"
 
 struct GLFWwindow;
+struct GLFWmonitor;
 struct ImVec2;
 
 // Owns the GLFW window + OpenGL context and drives the main loop.
@@ -65,6 +66,10 @@ private:
         bool* boolPtr = nullptr;
         std::string onLabel = "ON";
         std::string offLabel = "OFF";
+        // Optional: called after a Bool row's value changes (e.g.
+        // Fullscreen needs to actually switch the window, not just flip a
+        // flag). Most Bool rows leave this null.
+        std::function<void()> onBoolChanged;
 
         int* enumPtr = nullptr;
         const std::vector<std::string>* enumNames = nullptr;
@@ -122,6 +127,23 @@ private:
     void destroySceneFbo();
     void renderPostProcess(int width, int height);
 
+    // Switches between fullscreen (borderless, covering resolveMonitor())
+    // and windowed, via GLFW's monitor association -- no window or GL
+    // context recreation, so all GL/mpv/ImGui state stays valid.
+    // Remembers the windowed geometry the first time it goes fullscreen,
+    // so toggling back restores where the window was.
+    void applyFullscreen(bool enable);
+
+    // Populates monitorChoiceNames_ ({"Primary"} + each connected
+    // monitor's GLFW name) -- called once at startup; monitor hot-plug
+    // during a run isn't tracked.
+    void scanAvailableMonitors();
+    // The monitor monitorIndex_ refers to (index 0 = whatever GLFW
+    // considers primary right now; 1..N = a specific connected monitor).
+    // Falls back to the primary monitor if the index is out of range
+    // (e.g. a monitor was unplugged since monitorIndex_ was persisted).
+    GLFWmonitor* resolveMonitor() const;
+
     void scanAvailableFonts();          // populates availableFontFiles_/fontChoiceNames_ from fontsDir_
     std::string resolveFontPath() const;  // fontPath_ (default) or fontsDir_/selectedFontFile_
     void loadSelectedFontIntoAtlas();   // AddFontFromFileTTF with a fallback chain; no atlas Clear()
@@ -141,6 +163,23 @@ private:
 
     GLFWwindow* window_ = nullptr;
     MpvPlayer mpv_;
+
+    // Fullscreen ("Fullscreen" settings row, persisted -- also what makes
+    // it launch fullscreen by default once turned on). windowed* remembers
+    // the pre-fullscreen geometry (captured at window creation, and again
+    // any time fullscreen is turned on from a windowed state) so toggling
+    // back restores a sensible window instead of some arbitrary spot.
+    bool fullscreen_ = false;
+    int windowedX_ = 0;
+    int windowedY_ = 0;
+    int windowedWidth_ = 1280;
+    int windowedHeight_ = 720;
+
+    // Which monitor fullscreen uses ("Monitor" settings row, persisted).
+    // 0 = "Primary"; 1..N = a specific connected monitor -- see
+    // scanAvailableMonitors()/resolveMonitor().
+    int monitorIndex_ = 0;
+    std::vector<std::string> monitorChoiceNames_;
 
     unsigned int blitProgram_ = 0;
     unsigned int blitVao_ = 0;

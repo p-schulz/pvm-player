@@ -48,6 +48,14 @@ struct AppSettings {
     // videoScaleModeIndex_/aspectOverrideIndex_.
     int videoScaleModeIndex = 0;
     int aspectOverrideIndex = 0;
+
+    // Launch fullscreen by default and remember the "Fullscreen" settings
+    // row's state across restarts; see App::applyFullscreen().
+    bool fullscreen = false;
+
+    // Which monitor fullscreen uses: 0 = Primary (default), 1..N = a
+    // specific connected monitor; see App::resolveMonitor().
+    int monitorIndex = 0;
 };
 
 // Reads `path` and overwrites the matching fields of `settings` for any

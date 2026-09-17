@@ -130,6 +130,10 @@ bool loadSettings(const std::string& path, AppSettings& settings) {
             ok = parseInt(value, settings.videoScaleModeIndex);
         } else if (key == "aspect_override_index") {
             ok = parseInt(value, settings.aspectOverrideIndex);
+        } else if (key == "fullscreen") {
+            ok = parseBool(value, settings.fullscreen);
+        } else if (key == "monitor_index") {
+            ok = parseInt(value, settings.monitorIndex);
         } else {
             // Unknown key: ignored rather than treated as an error, so an
             // older config file still loads after new settings are added.
@@ -177,6 +181,8 @@ bool saveSettings(const std::string& path, const AppSettings& settings) {
     file << "volume=" << settings.volume << "\n";
     file << "video_scale_mode=" << settings.videoScaleModeIndex << "\n";
     file << "aspect_override_index=" << settings.aspectOverrideIndex << "\n";
+    file << "fullscreen=" << (settings.fullscreen ? "true" : "false") << "\n";
+    file << "monitor_index=" << settings.monitorIndex << "\n";
 
     return static_cast<bool>(file);
 }
