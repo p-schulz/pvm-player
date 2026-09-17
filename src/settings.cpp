@@ -124,6 +124,12 @@ bool loadSettings(const std::string& path, AppSettings& settings) {
             ok = parseFloat(value, settings.vignetteStrength);
         } else if (key == "color_tear") {
             ok = parseFloat(value, settings.colorTear);
+        } else if (key == "volume") {
+            ok = parseInt(value, settings.volume);
+        } else if (key == "video_scale_mode") {
+            ok = parseInt(value, settings.videoScaleModeIndex);
+        } else if (key == "aspect_override_index") {
+            ok = parseInt(value, settings.aspectOverrideIndex);
         } else {
             // Unknown key: ignored rather than treated as an error, so an
             // older config file still loads after new settings are added.
@@ -168,6 +174,9 @@ bool saveSettings(const std::string& path, const AppSettings& settings) {
     file << "scanline_count=" << settings.scanlineCount << "\n";
     file << "vignette_strength=" << settings.vignetteStrength << "\n";
     file << "color_tear=" << settings.colorTear << "\n";
+    file << "volume=" << settings.volume << "\n";
+    file << "video_scale_mode=" << settings.videoScaleModeIndex << "\n";
+    file << "aspect_override_index=" << settings.aspectOverrideIndex << "\n";
 
     return static_cast<bool>(file);
 }

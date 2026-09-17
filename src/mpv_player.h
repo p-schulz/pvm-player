@@ -45,6 +45,19 @@ public:
     void togglePause();
     void seekRelative(double seconds);
     void stop();
+    void setVolume(double volumePercent);  // 0-100 (mpv's normal softvol range)
+
+    // Forces mpv to letterbox/pillarbox as if the video had this aspect
+    // ratio (e.g. "4:3", "16:9") instead of its own; "no" restores the
+    // file's real aspect. Maps directly to mpv's video-aspect-override.
+    void setAspectOverride(const std::string& ratio);
+
+    // The video's current effective display size in pixels -- i.e. after
+    // any aspect-ratio override and pixel-aspect correction, so it's the
+    // right thing to compare against the window size for crop math (see
+    // App's video fill mode). Returns false (leaving width/height
+    // untouched) if unavailable yet (e.g. nothing decoded).
+    bool videoDisplaySize(int& width, int& height) const;
 
     // True once, the first time this is called after mpv reached natural
     // end-of-file (not a user-initiated stop() or an error). Used by the

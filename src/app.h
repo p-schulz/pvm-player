@@ -88,6 +88,7 @@ private:
     void renderPlaybackHud();
     void renderAudioIndicator();
     void renderAudioProgressBar();
+    void renderOsdMenu();
     void renderMenu();
     void renderSettings();
     void drawMenuRow(const std::string& label, bool selected);
@@ -109,6 +110,13 @@ private:
     std::vector<SettingsRowDesc> buildSettingsRows();
     static std::string formatSettingsRow(const SettingsRowDesc& row);
     void adjustSettingsRow(SettingsRowDesc& row, int direction);
+
+    // The in-playback quick OSD (opened with 'M'): a small fixed subset of
+    // settings (brightness/contrast/chroma/volume) reusing the same
+    // SettingsRowDesc plumbing as the full settings screen, but with its
+    // own plain "LABEL : value" text formatting and no background.
+    std::vector<SettingsRowDesc> buildOsdRows();
+    static std::string formatOsdRow(const SettingsRowDesc& row);
 
     void ensureSceneFbo(int width, int height);
     void destroySceneFbo();
@@ -209,6 +217,34 @@ private:
     // startDirectory_ when set) -- see enterFileBrowser(). Both persisted.
     std::string startDirectory_;
     std::string lastUsedDirectory_;
+
+    // In-playback quick OSD (see buildOsdRows()/renderOsdMenu()), toggled
+    // with 'M'. Volume is persisted like the other settings; brightness/
+    // contrast/saturation are the OSD's "chroma" row and already exist
+    // above as screen-appearance settings -- the OSD just exposes them
+    // under different (quick-access) labels, same backing variables.
+    bool osdMenuVisible_ = false;
+    int osdSelectedRow_ = 0;
+    int volume_ = 100;
+
+    // Video scaling, both cycled with a key during playback ('V'/'B') and
+    // persisted:
+    //   videoScaleModeIndex_ -- indexes kVideoScaleModeNames:
+    //     0 FIT  (default) -- mpv's normal letterbox/pillarbox, unchanged.
+    //     1 FILL -- stretches the letterboxed *content* rectangle to fill
+    //       the screen on the bars' axis only, so the picture is distorted
+    //       (non-uniform scale) but fills completely with the cheapest
+    //       possible change (a UV crop on the existing texture, not a
+    //       different render size or mpv re-scale).
+    //     2 CROP -- uniform zoom-in (same factor both axes, so no
+    //       distortion) until the picture covers the window, cropping the
+    //       overflow off symmetrically -- see blit.frag's uUvScale/
+    //       uUvOffset and renderFrame()'s comment for the derivation.
+    //   aspectOverrideIndex_ -- indexes kAspectRatioNames/kAspectRatioValues
+    //     (Default/4:3/5:4/16:9/16:10), forwarded to mpv's own
+    //     video-aspect-override so mpv does the actual letterbox math.
+    int videoScaleModeIndex_ = 0;
+    int aspectOverrideIndex_ = 0;
 
     MediaKind currentMediaKind_ = MediaKind::Unknown;
 

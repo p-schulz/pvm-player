@@ -41,6 +41,13 @@ struct AppSettings {
     int scanlineCount = 480;
     float vignetteStrength = 0.35f;
     float colorTear = 0.0f;  // channel-shift amount, in pixels
+
+    int volume = 100;  // mpv softvol percent, 0-100; see the in-playback OSD ('M')
+
+    // Video scaling during playback ('V'/'B'); see App's
+    // videoScaleModeIndex_/aspectOverrideIndex_.
+    int videoScaleModeIndex = 0;
+    int aspectOverrideIndex = 0;
 };
 
 // Reads `path` and overwrites the matching fields of `settings` for any

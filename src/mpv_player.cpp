@@ -238,6 +238,38 @@ void MpvPlayer::stop() {
     filename_.clear();
 }
 
+void MpvPlayer::setVolume(double volumePercent) {
+    if (!mpv_) {
+        return;
+    }
+    checkMpvError(mpv_set_property(mpv_, "volume", MPV_FORMAT_DOUBLE, &volumePercent), "set volume");
+}
+
+void MpvPlayer::setAspectOverride(const std::string& ratio) {
+    if (!mpv_) {
+        return;
+    }
+    checkMpvError(mpv_set_property_string(mpv_, "video-aspect-override", ratio.c_str()),
+                 "set video-aspect-override");
+}
+
+bool MpvPlayer::videoDisplaySize(int& width, int& height) const {
+    if (!mpv_) {
+        return false;
+    }
+    int64_t w = 0, h = 0;
+    if (mpv_get_property(mpv_, "dwidth", MPV_FORMAT_INT64, &w) < 0 ||
+        mpv_get_property(mpv_, "dheight", MPV_FORMAT_INT64, &h) < 0) {
+        return false;
+    }
+    if (w <= 0 || h <= 0) {
+        return false;
+    }
+    width = static_cast<int>(w);
+    height = static_cast<int>(h);
+    return true;
+}
+
 bool MpvPlayer::consumeEndOfFile() {
     bool value = endOfFileFlag_;
     endOfFileFlag_ = false;

@@ -78,6 +78,9 @@ std::vector<int> parseSimulatedKeys() {
         else if (tok == "SPACE") keys.push_back(GLFW_KEY_SPACE);
         else if (tok == "BACKSPACE") keys.push_back(GLFW_KEY_BACKSPACE);
         else if (tok == "C") keys.push_back(GLFW_KEY_C);
+        else if (tok == "M") keys.push_back(GLFW_KEY_M);
+        else if (tok == "V") keys.push_back(GLFW_KEY_V);
+        else if (tok == "B") keys.push_back(GLFW_KEY_B);
     }
     return keys;
 }
@@ -263,6 +266,17 @@ const std::vector<std::string> kMenuPositionNames = {"Top Left", "Top Right", "C
 // App::drawMenuRow().
 const std::vector<std::string> kSelectionStyleNames = {"Highlight", "Marker", "Underline"};
 
+// Aspect-ratio override cycled with 'B' during playback. Names are for
+// display; values are what's forwarded to mpv's video-aspect-override
+// ("no" = default/unchanged, i.e. the file's own aspect).
+const std::vector<std::string> kAspectRatioNames = {"Default", "4:3", "5:4", "16:9", "16:10"};
+const std::vector<std::string> kAspectRatioValues = {"no", "4:3", "5:4", "16:9", "16:10"};
+
+// Video scale mode cycled with 'V' during playback -- FIT (mpv's normal
+// letterbox/pillarbox), FILL (stretch to fill, distorting), CROP (uniform
+// zoom to fill, cropping overflow, no distortion). See App::renderFrame().
+const std::vector<std::string> kVideoScaleModeNames = {"FIT", "FILL", "CROP"};
+
 // Shortens a long path for display in a settings row (the stored value
 // itself is never truncated) so a deeply nested directory doesn't blow up
 // the auto-sized settings panel's width.
@@ -360,6 +374,9 @@ bool App::init(int width, int height, const char* title) {
     loadedSettings.scanlineCount = scanlineCount_;
     loadedSettings.vignetteStrength = vignetteStrength_;
     loadedSettings.colorTear = colorTear_;
+    loadedSettings.volume = volume_;
+    loadedSettings.videoScaleModeIndex = videoScaleModeIndex_;
+    loadedSettings.aspectOverrideIndex = aspectOverrideIndex_;
     loadSettings(configPath_, loadedSettings);
 
     fontSizePx_ = std::clamp(loadedSettings.fontSizePx, kFontSizeMin, kFontSizeSafetyCeiling);
@@ -399,6 +416,15 @@ bool App::init(int width, int height, const char* title) {
     scanlineCount_ = std::clamp(loadedSettings.scanlineCount, 60, 1080);
     vignetteStrength_ = std::clamp(loadedSettings.vignetteStrength, 0.0f, 1.0f);
     colorTear_ = std::clamp(loadedSettings.colorTear, 0.0f, 10.0f);
+    volume_ = std::clamp(loadedSettings.volume, 0, 100);
+    mpv_.setVolume(volume_);
+    const int videoScaleModeCount = static_cast<int>(kVideoScaleModeNames.size());
+    videoScaleModeIndex_ = ((loadedSettings.videoScaleModeIndex % videoScaleModeCount) + videoScaleModeCount) %
+                           videoScaleModeCount;
+    const int aspectRatioCount = static_cast<int>(kAspectRatioNames.size());
+    aspectOverrideIndex_ =
+        ((loadedSettings.aspectOverrideIndex % aspectRatioCount) + aspectRatioCount) % aspectRatioCount;
+    mpv_.setAspectOverride(kAspectRatioValues[static_cast<size_t>(aspectOverrideIndex_)]);
 
     blitProgram_ = loadShaderProgram(dir + "/shaders/passthrough.vert", dir + "/shaders/blit.frag");
     if (!blitProgram_) {
@@ -523,6 +549,9 @@ void App::saveCurrentSettings() const {
     settings.scanlineCount = scanlineCount_;
     settings.vignetteStrength = vignetteStrength_;
     settings.colorTear = colorTear_;
+    settings.volume = volume_;
+    settings.videoScaleModeIndex = videoScaleModeIndex_;
+    settings.aspectOverrideIndex = aspectOverrideIndex_;
     saveSettings(configPath_, settings);
 }
 
@@ -711,10 +740,55 @@ void App::renderFrame() {
         glDisable(GL_SCISSOR_TEST);
         glViewport(0, 0, width, height);
 
+        // Video scale mode ('V'): FIT (identity -- mpv's own letterbox/
+        // pillarbox stands as rendered) is the default; FILL and CROP both
+        // sample a cropped sub-rect of the texture instead of the whole
+        // thing, computed from the video's effective aspect (post any 'B'
+        // override) vs. the window's.
+        //
+        // contentFracX/Y is the fraction of the FBO each axis is actually
+        // covered by picture in FIT mode (1.0 on whichever axis already
+        // matches the window; <1.0 on the axis with bars).
+        float uvScaleX = 1.0f, uvScaleY = 1.0f, uvOffsetX = 0.0f, uvOffsetY = 0.0f;
+        int videoW = 0, videoH = 0;
+        if (videoScaleModeIndex_ != 0 && width > 0 && height > 0 &&
+            mpv_.videoDisplaySize(videoW, videoH) && videoW > 0 && videoH > 0) {
+            const float videoAspect = static_cast<float>(videoW) / static_cast<float>(videoH);
+            const float windowAspect = static_cast<float>(width) / static_cast<float>(height);
+            const float contentFracX = (videoAspect > windowAspect) ? 1.0f : videoAspect / windowAspect;
+            const float contentFracY = (videoAspect > windowAspect) ? windowAspect / videoAspect : 1.0f;
+
+            if (videoScaleModeIndex_ == 1) {
+                // FILL: crop only the bars' axis down to just its content,
+                // leaving the other axis untouched -- stretches the result
+                // to fill the screen, distorting the picture (cheapest
+                // possible "no bars" change: a UV crop, nothing else).
+                uvScaleX = contentFracX;
+                uvOffsetX = (1.0f - uvScaleX) * 0.5f;
+                uvScaleY = contentFracY;
+                uvOffsetY = (1.0f - uvScaleY) * 0.5f;
+            } else {
+                // CROP: uniform zoom by 1/min(contentFracX, contentFracY)
+                // applied to *both* axes equally, so the sampled rect keeps
+                // the video's exact aspect ratio (no distortion) while
+                // still covering the whole screen -- the overflow this
+                // creates on the axis that had no bars is what gets
+                // cropped off (e.g. left/right for a 16:9 video letterboxed
+                // top/bottom in a 4:3 window).
+                const float cropFrac = std::min(contentFracX, contentFracY);
+                uvScaleX = cropFrac;
+                uvScaleY = cropFrac;
+                uvOffsetX = (1.0f - cropFrac) * 0.5f;
+                uvOffsetY = (1.0f - cropFrac) * 0.5f;
+            }
+        }
+
         glUseProgram(blitProgram_);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, videoTexture);
         glUniform1i(glGetUniformLocation(blitProgram_, "uTexture"), 0);
+        glUniform2f(glGetUniformLocation(blitProgram_, "uUvScale"), uvScaleX, uvScaleY);
+        glUniform2f(glGetUniformLocation(blitProgram_, "uUvOffset"), uvOffsetX, uvOffsetY);
 
         glBindVertexArray(blitVao_);
         glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -767,6 +841,11 @@ void App::renderPlaybackHud() {
 
     if (currentMediaKind_ == MediaKind::Audio) {
         renderAudioIndicator();
+        renderAudioProgressBar();
+    }
+
+    if (osdMenuVisible_) {
+        renderOsdMenu();
     }
 
     ImGui::Render();
@@ -797,6 +876,75 @@ void App::renderAudioIndicator() {
     }
     ImGui::SetWindowFontScale(1.0f);
     ImGui::End();
+}
+
+// A minimal playback-position bar for audio, drawn along the bottom edge
+// of the screen: an unfilled white border (the track) with a small gap
+// inside it, then a filled white rectangle that grows left-to-right as
+// mpv's time-pos advances toward duration. Uses the foreground draw list
+// directly (screen-space, no ImGui window needed) since it's not tied to
+// any particular window's content area -- deliberately not hooked up to
+// menu/text scale, matching the "just a simple bar" ask.
+void App::renderAudioProgressBar() {
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+
+    constexpr float kMargin = 16.0f;      // inset from the screen edges
+    constexpr float kBarHeight = 20.0f;
+    constexpr float kBorderThickness = 2.0f;
+    constexpr float kInnerPad = 4.0f;     // gap between border and fill
+
+    const ImVec2 outerMin(kMargin, display.y - kMargin - kBarHeight);
+    const ImVec2 outerMax(display.x - kMargin, display.y - kMargin);
+
+    ImDrawList* drawList = ImGui::GetForegroundDrawList();
+    drawList->AddRect(outerMin, outerMax, IM_COL32(255, 255, 255, 255), 0.0f, 0, kBorderThickness);
+
+    const double duration = mpv_.durationSeconds();
+    const double position = mpv_.timePositionSeconds();
+    float fraction = 0.0f;
+    if (duration > 0.0) {
+        fraction = static_cast<float>(std::clamp(position / duration, 0.0, 1.0));
+    }
+
+    const ImVec2 innerMin(outerMin.x + kInnerPad, outerMin.y + kInnerPad);
+    const ImVec2 innerMaxFull(outerMax.x - kInnerPad, outerMax.y - kInnerPad);
+    if (fraction > 0.0f) {
+        const ImVec2 innerMax(innerMin.x + (innerMaxFull.x - innerMin.x) * fraction, innerMaxFull.y);
+        drawList->AddRectFilled(innerMin, innerMax, IM_COL32(255, 255, 255, 255));
+    }
+}
+
+// A quick-access OSD opened with 'M' during playback, for adjusting a
+// handful of settings without leaving the video/audio playing behind it.
+// Deliberately plain per the request: just text (a ">" prefix marks the
+// selected row instead of a drawn highlight/marker/underline), no
+// background window fill, so it never blocks the picture.
+void App::renderOsdMenu() {
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                                    ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBackground;
+
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::Begin("OSD Menu", nullptr, flags);
+
+    {
+        VertexScaleScope textScope(textScaleX_, textScaleY_);
+        ImGui::TextUnformatted("MENU");
+    }
+
+    const std::vector<SettingsRowDesc> rows = buildOsdRows();
+    for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
+        const bool selected = (i == osdSelectedRow_);
+        const std::string line = (selected ? "> " : "  ") + formatOsdRow(rows[static_cast<size_t>(i)]);
+        VertexScaleScope textScope(textScaleX_, textScaleY_);
+        ImGui::TextUnformatted(line.c_str());
+    }
+
+    ImGui::End();
+
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
 // Row-selection visual style, adjustable via the settings screen
@@ -1205,6 +1353,107 @@ std::string App::formatSettingsRow(const SettingsRowDesc& row) {
     return buf;
 }
 
+// A small fixed set of quick-access rows for the in-playback OSD ('M'):
+// brightness/contrast/chroma (screen appearance -- the same backing
+// variables as the full settings screen's rows, just under quick-OSD
+// labels) plus volume (new here) and an EXIT action to close the OSD.
+std::vector<App::SettingsRowDesc> App::buildOsdRows() {
+    std::vector<SettingsRowDesc> rows;
+
+    SettingsRowDesc brightnessRow;
+    brightnessRow.type = SettingsRowType::Float;
+    brightnessRow.label = "BRIGHTNESS";
+    brightnessRow.floatPtr = &brightness_;
+    brightnessRow.floatMin = -0.5f;
+    brightnessRow.floatMax = 0.5f;
+    brightnessRow.floatStep = 0.05f;
+    rows.push_back(brightnessRow);
+
+    SettingsRowDesc contrastRow;
+    contrastRow.type = SettingsRowType::Float;
+    contrastRow.label = "CONTRAST";
+    contrastRow.floatPtr = &contrast_;
+    contrastRow.floatMin = 0.0f;
+    contrastRow.floatMax = 2.0f;
+    contrastRow.floatStep = 0.05f;
+    rows.push_back(contrastRow);
+
+    SettingsRowDesc chromaRow;
+    chromaRow.type = SettingsRowType::Float;
+    chromaRow.label = "CHROMA";
+    chromaRow.floatPtr = &saturation_;  // "chroma" is the classic monitor-OSD term for saturation
+    chromaRow.floatMin = 0.0f;
+    chromaRow.floatMax = 2.0f;
+    chromaRow.floatStep = 0.05f;
+    rows.push_back(chromaRow);
+
+    SettingsRowDesc volumeRow;
+    volumeRow.type = SettingsRowType::Int;
+    volumeRow.label = "VOLUME";
+    volumeRow.intPtr = &volume_;
+    volumeRow.intMin = 0;
+    volumeRow.intMax = 100;
+    volumeRow.intStep = 5;
+    volumeRow.onIntChanged = [this](int v) {
+        volume_ = std::clamp(v, 0, 100);
+        mpv_.setVolume(volume_);
+    };
+    rows.push_back(volumeRow);
+
+    SettingsRowDesc scaleRow;
+    scaleRow.type = SettingsRowType::Enum;
+    scaleRow.label = "SCALE";
+    scaleRow.enumPtr = &videoScaleModeIndex_;
+    scaleRow.enumNames = &kVideoScaleModeNames;
+    rows.push_back(scaleRow);
+
+    SettingsRowDesc aspectRow;
+    aspectRow.type = SettingsRowType::Enum;
+    aspectRow.label = "ASPECT";
+    aspectRow.enumPtr = &aspectOverrideIndex_;
+    aspectRow.enumNames = &kAspectRatioNames;
+    aspectRow.onEnumChanged = [this]() {
+        mpv_.setAspectOverride(kAspectRatioValues[static_cast<size_t>(aspectOverrideIndex_)]);
+    };
+    rows.push_back(aspectRow);
+
+    SettingsRowDesc exitRow;
+    exitRow.type = SettingsRowType::Action;
+    exitRow.label = "EXIT";
+    exitRow.onActivate = [this]() { osdMenuVisible_ = false; };
+    rows.push_back(exitRow);
+
+    return rows;
+}
+
+// "LABEL : value" -- deliberately plainer than formatSettingsRow()'s
+// padded/justified layout, matching what was asked for this OSD
+// specifically (e.g. "VOLUME : 100"). EXIT has no value to show.
+std::string App::formatOsdRow(const SettingsRowDesc& row) {
+    char buf[48];
+    switch (row.type) {
+        case SettingsRowType::Float:
+            std::snprintf(buf, sizeof(buf), "%s : %.2f", row.label.c_str(), *row.floatPtr);
+            break;
+        case SettingsRowType::Int:
+            std::snprintf(buf, sizeof(buf), "%s : %d%s", row.label.c_str(), *row.intPtr,
+                          row.intSuffix.c_str());
+            break;
+        case SettingsRowType::Bool:
+            std::snprintf(buf, sizeof(buf), "%s : %s", row.label.c_str(),
+                          *row.boolPtr ? row.onLabel.c_str() : row.offLabel.c_str());
+            break;
+        case SettingsRowType::Enum:
+            std::snprintf(buf, sizeof(buf), "%s : %s", row.label.c_str(),
+                          (*row.enumNames)[static_cast<size_t>(*row.enumPtr)].c_str());
+            break;
+        default:
+            std::snprintf(buf, sizeof(buf), "%s", row.label.c_str());
+            break;
+    }
+    return buf;
+}
+
 void App::adjustSettingsRow(SettingsRowDesc& row, int direction) {
     switch (row.type) {
         case SettingsRowType::Int: {
@@ -1422,6 +1671,58 @@ void App::handleKey(int key, int action) {
             break;
 
         case Screen::Playing:
+            if (key == GLFW_KEY_M && action == GLFW_PRESS) {
+                osdMenuVisible_ = !osdMenuVisible_;
+                osdSelectedRow_ = 0;
+                break;
+            }
+
+            if (osdMenuVisible_) {
+                // The OSD captures UP/DOWN/LEFT/RIGHT/ENTER while open --
+                // normal seek/pause/stop below don't run. ESC closes the
+                // OSD rather than falling through to "stop playback", so
+                // "back" backs out of the overlay first.
+                std::vector<SettingsRowDesc> osdRows = buildOsdRows();
+                const int osdRowCount = static_cast<int>(osdRows.size());
+                switch (key) {
+                    case GLFW_KEY_UP:
+                        osdSelectedRow_ = std::max(0, osdSelectedRow_ - 1);
+                        break;
+                    case GLFW_KEY_DOWN:
+                        osdSelectedRow_ = std::min(osdRowCount - 1, osdSelectedRow_ + 1);
+                        break;
+                    case GLFW_KEY_LEFT:
+                        if (osdSelectedRow_ >= 0 && osdSelectedRow_ < osdRowCount) {
+                            adjustSettingsRow(osdRows[static_cast<size_t>(osdSelectedRow_)], -1);
+                            saveCurrentSettings();
+                        }
+                        break;
+                    case GLFW_KEY_RIGHT:
+                        if (osdSelectedRow_ >= 0 && osdSelectedRow_ < osdRowCount) {
+                            adjustSettingsRow(osdRows[static_cast<size_t>(osdSelectedRow_)], 1);
+                            saveCurrentSettings();
+                        }
+                        break;
+                    case GLFW_KEY_ENTER:
+                    case GLFW_KEY_KP_ENTER:
+                        if (action == GLFW_PRESS && osdSelectedRow_ >= 0 && osdSelectedRow_ < osdRowCount) {
+                            const SettingsRowDesc& row = osdRows[static_cast<size_t>(osdSelectedRow_)];
+                            if (row.type == SettingsRowType::Action && row.onActivate) {
+                                row.onActivate();
+                            }
+                        }
+                        break;
+                    case GLFW_KEY_ESCAPE:
+                        if (action == GLFW_PRESS) {
+                            osdMenuVisible_ = false;
+                        }
+                        break;
+                    default:
+                        break;
+                }
+                break;
+            }
+
             switch (key) {
                 case GLFW_KEY_SPACE:
                     if (action == GLFW_PRESS) {
@@ -1433,6 +1734,25 @@ void App::handleKey(int key, int action) {
                     break;
                 case GLFW_KEY_RIGHT:
                     mpv_.seekRelative(5.0);
+                    break;
+                case GLFW_KEY_V:
+                    if (action == GLFW_PRESS) {
+                        const int count = static_cast<int>(kVideoScaleModeNames.size());
+                        videoScaleModeIndex_ = (videoScaleModeIndex_ + 1) % count;
+                        std::fprintf(stdout, "Video scale: %s\n",
+                                     kVideoScaleModeNames[static_cast<size_t>(videoScaleModeIndex_)].c_str());
+                        saveCurrentSettings();
+                    }
+                    break;
+                case GLFW_KEY_B:
+                    if (action == GLFW_PRESS) {
+                        const int count = static_cast<int>(kAspectRatioNames.size());
+                        aspectOverrideIndex_ = (aspectOverrideIndex_ + 1) % count;
+                        mpv_.setAspectOverride(kAspectRatioValues[static_cast<size_t>(aspectOverrideIndex_)]);
+                        std::fprintf(stdout, "Aspect ratio: %s\n",
+                                     kAspectRatioNames[static_cast<size_t>(aspectOverrideIndex_)].c_str());
+                        saveCurrentSettings();
+                    }
                     break;
                 case GLFW_KEY_ESCAPE:
                     if (action == GLFW_PRESS) {
@@ -1449,6 +1769,7 @@ void App::handleKey(int key, int action) {
 
 void App::onPlaybackStopped() {
     currentMediaKind_ = MediaKind::Unknown;
+    osdMenuVisible_ = false;
     screen_ = Screen::RootMenu;
 
     // Remember where we were browsing so "Play Media" resumes here next
