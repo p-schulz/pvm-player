@@ -6,8 +6,7 @@ an optional CRT post-process pass (scanlines, vignette, bloom, color tear)
 over whatever's playing.
 
 <p align="center">
-  <img src="docs/screenshot-menu.png" alt="PVM-style root menu" width="420">
-  <img src="docs/screenshot-playback.png" alt="Video playback with the CRT effect" width="420">
+  <img src="docs/screenshot-menu.png" alt="PVM-style root menu" width="420">  <img src="docs/screenshot-playback.png" alt="Video playback with the CRT effect" width="420">
 </p>
 
 ## Features
