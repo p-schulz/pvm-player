@@ -62,13 +62,5 @@ for everyday use.
 | ← / →                 | Seek ±5s (playback) or adjust a setting     |
 | C                     | Toggle the CRT effect                      |
 
-## Status
-
-A phase-by-phase prototype — see [`PLAN.md`](PLAN.md) for the build plan
-and progress. Core playback, menu, file browsing, and the CRT/appearance
-pipeline are done; Windows packaging (bundling `libmpv` + its DLLs into a
-single distributable `.exe`) is the one remaining phase, pending a
-Windows-capable build environment.
-
 Explicitly out of scope for this prototype: subtitles, network streaming,
 playlist persistence, metadata/artwork scraping, and audio visualizations.
