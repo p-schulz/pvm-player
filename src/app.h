@@ -9,6 +9,7 @@
 #include "ui/menu.h"
 
 struct GLFWwindow;
+struct ImVec2;
 
 // Owns the GLFW window + OpenGL context and drives the main loop.
 class App {
@@ -86,11 +87,24 @@ private:
     void renderHud();
     void renderPlaybackHud();
     void renderAudioIndicator();
+    void renderAudioProgressBar();
     void renderMenu();
     void renderSettings();
     void drawMenuRow(const std::string& label, bool selected);
-    void drawScrollableRows(int count, int selectedIndex, const std::function<std::string(int)>& labelFor);
+    // `anchor` is the screen-space point that stays fixed while the list's
+    // content is stretched by menuScaleX_/menuScaleY_ (see
+    // VertexScaleScope in app.cpp) -- callers pass the same anchor used
+    // for the rest of that window's content, so the whole panel reads as
+    // one rigid stretch despite the list living in its own child window
+    // (ImGui child windows get their own ImDrawList, so this can't be done
+    // with a single scope wrapping the whole Begin/End call).
+    void drawScrollableRows(int count, int selectedIndex, const std::function<std::string(int)>& labelFor,
+                             ImVec2 anchor);
     void positionMenuWindow() const;
+    // The screen-space point of the current ImGui window's configured
+    // pivot corner (menuPositionIndex_), used as the fixed anchor for both
+    // positioning (positionMenuWindow()) and menu-stretch scaling.
+    ImVec2 menuPivotAnchor() const;
 
     std::vector<SettingsRowDesc> buildSettingsRows();
     static std::string formatSettingsRow(const SettingsRowDesc& row);
@@ -167,6 +181,20 @@ private:
     // screen.
     int menuPositionIndex_ = 0;
     int settingsSelectedRow_ = 0;
+
+    // Independent X/Y stretch, adjustable via the settings screen (see
+    // app.cpp's VertexScaleScope). menuScale* stretches the whole
+    // menu-family panel (root menu/file browser/settings/directory
+    // picker) as one rigid unit, anchored at its configured screen
+    // position; textScale* stretches just the glyphs of every piece of
+    // text drawn anywhere (menu rows, HUD, audio indicator), each
+    // anchored at that text's own position -- so it compounds with
+    // menuScale* for menu-screen text but also applies on its own to the
+    // always-on playback HUD, which has no "menu" to stretch.
+    float menuScaleX_ = 1.0f;
+    float menuScaleY_ = 1.0f;
+    float textScaleX_ = 1.0f;
+    float textScaleY_ = 1.0f;
 
     // Index into a fixed list of row-selection visual styles (reverse-video
     // highlight / marker rect / underline) -- adjustable via the settings

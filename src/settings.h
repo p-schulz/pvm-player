@@ -15,6 +15,13 @@ struct AppSettings {
     int selectionStyleIndex = 0;
     bool showHiddenFiles = false;
 
+    // Independent X/Y stretch for the menu panel and for text everywhere;
+    // see App's menuScaleX_/menuScaleY_/textScaleX_/textScaleY_.
+    float menuScaleX = 1.0f;
+    float menuScaleY = 1.0f;
+    float textScaleX = 1.0f;
+    float textScaleY = 1.0f;
+
     // Directory the file browser starts at (user-configurable, via a
     // folder-picker settings row) and the directory it was last in when
     // media playback stopped (auto-tracked; takes priority over

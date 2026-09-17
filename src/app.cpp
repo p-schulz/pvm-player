@@ -159,6 +159,57 @@ struct GLStateGuard {
     }
 };
 
+// ImGui has no built-in anisotropic (independent X/Y) scale for text or
+// windows -- io.FontGlobalScale and window scale are both single scalars.
+// This gets independent X/Y stretch by directly rewriting the positions of
+// whatever vertices get added to the *current* window's ImDrawList during
+// this scope's lifetime, anchored at a fixed screen-space point so that
+// point doesn't move while everything else grows/shrinks around it.
+//
+// Construct it right before the ImGui call(s) to stretch (Text, Selectable,
+// a whole window's content, ...) and let it go out of scope right after.
+// Nesting is fine and compounds correctly: an inner scope's already-moved
+// vertices just get moved again by an outer scope's transform, which is
+// exactly how e.g. "menu scale" (the whole panel) and "text scale" (each
+// row's glyphs individually) are meant to combine.
+//
+// One real limitation: ImGui child windows (BeginChild/EndChild, used for
+// the scrollable row list) get their own separate ImDrawList, so a scope
+// opened in the parent won't see vertices drawn inside a child -- callers
+// need a separate scope inside the child (see drawScrollableRows()).
+class VertexScaleScope {
+public:
+    VertexScaleScope(float scaleX, float scaleY, ImVec2 anchor)
+        : scaleX_(scaleX), scaleY_(scaleY), anchor_(anchor), drawList_(ImGui::GetWindowDrawList()),
+          startVtx_(drawList_->VtxBuffer.Size) {}
+
+    // Convenience: anchor at the current cursor position, for a single
+    // piece of text/UI that should grow from where it's about to be drawn.
+    VertexScaleScope(float scaleX, float scaleY)
+        : VertexScaleScope(scaleX, scaleY, ImGui::GetCursorScreenPos()) {}
+
+    ~VertexScaleScope() {
+        if (scaleX_ == 1.0f && scaleY_ == 1.0f) {
+            return;
+        }
+        for (int i = startVtx_; i < drawList_->VtxBuffer.Size; ++i) {
+            ImDrawVert& v = drawList_->VtxBuffer[i];
+            v.pos.x = anchor_.x + (v.pos.x - anchor_.x) * scaleX_;
+            v.pos.y = anchor_.y + (v.pos.y - anchor_.y) * scaleY_;
+        }
+    }
+
+    VertexScaleScope(const VertexScaleScope&) = delete;
+    VertexScaleScope& operator=(const VertexScaleScope&) = delete;
+
+private:
+    float scaleX_;
+    float scaleY_;
+    ImVec2 anchor_;
+    ImDrawList* drawList_;
+    int startVtx_;
+};
+
 std::string formatTimestamp(double seconds) {
     if (seconds < 0.0) seconds = 0.0;
     int total = static_cast<int>(seconds);
@@ -293,6 +344,10 @@ bool App::init(int width, int height, const char* title) {
     loadedSettings.fontFile = selectedFontFile_;
     loadedSettings.menuPositionIndex = menuPositionIndex_;
     loadedSettings.selectionStyleIndex = selectionStyleIndex_;
+    loadedSettings.menuScaleX = menuScaleX_;
+    loadedSettings.menuScaleY = menuScaleY_;
+    loadedSettings.textScaleX = textScaleX_;
+    loadedSettings.textScaleY = textScaleY_;
     loadedSettings.showHiddenFiles = showHiddenFiles_;
     loadedSettings.startDirectory = startDirectory_;
     loadedSettings.lastUsedDirectory = lastUsedDirectory_;
@@ -328,6 +383,10 @@ bool App::init(int width, int height, const char* title) {
     const int selectionStyleCount = static_cast<int>(kSelectionStyleNames.size());
     selectionStyleIndex_ = ((loadedSettings.selectionStyleIndex % selectionStyleCount) + selectionStyleCount) %
                            selectionStyleCount;
+    menuScaleX_ = std::clamp(loadedSettings.menuScaleX, 0.3f, 3.0f);
+    menuScaleY_ = std::clamp(loadedSettings.menuScaleY, 0.3f, 3.0f);
+    textScaleX_ = std::clamp(loadedSettings.textScaleX, 0.3f, 3.0f);
+    textScaleY_ = std::clamp(loadedSettings.textScaleY, 0.3f, 3.0f);
     showHiddenFiles_ = loadedSettings.showHiddenFiles;
     startDirectory_ = loadedSettings.startDirectory;
     lastUsedDirectory_ = loadedSettings.lastUsedDirectory;
@@ -448,6 +507,10 @@ void App::saveCurrentSettings() const {
     settings.fontFile = selectedFontFile_;
     settings.menuPositionIndex = menuPositionIndex_;
     settings.selectionStyleIndex = selectionStyleIndex_;
+    settings.menuScaleX = menuScaleX_;
+    settings.menuScaleY = menuScaleY_;
+    settings.textScaleX = textScaleX_;
+    settings.textScaleY = textScaleY_;
     settings.showHiddenFiles = showHiddenFiles_;
     settings.startDirectory = startDirectory_;
     settings.lastUsedDirectory = lastUsedDirectory_;
@@ -685,15 +748,20 @@ void App::renderPlaybackHud() {
     ImGui::SetNextWindowBgAlpha(0.35f);
     ImGui::Begin("HUD", nullptr, flags);
 
-    if (!mpv_.filename().empty()) {
-        ImGui::Text("%s", basename(mpv_.filename()).c_str());
-    } else {
-        ImGui::Text("(no media loaded)");
-    }
+    {
+        // No "menu scale" here -- the playback HUD isn't a menu screen --
+        // but text scale still applies everywhere text is drawn.
+        VertexScaleScope textScope(textScaleX_, textScaleY_);
+        if (!mpv_.filename().empty()) {
+            ImGui::Text("%s", basename(mpv_.filename()).c_str());
+        } else {
+            ImGui::Text("(no media loaded)");
+        }
 
-    ImGui::Text("%s / %s", formatTimestamp(mpv_.timePositionSeconds()).c_str(),
-                formatTimestamp(mpv_.durationSeconds()).c_str());
-    ImGui::Text("%s", mpv_.isPaused() ? "PAUSED" : "PLAYING");
+        ImGui::Text("%s / %s", formatTimestamp(mpv_.timePositionSeconds()).c_str(),
+                    formatTimestamp(mpv_.durationSeconds()).c_str());
+        ImGui::Text("%s", mpv_.isPaused() ? "PAUSED" : "PLAYING");
+    }
 
     ImGui::End();
 
@@ -723,7 +791,10 @@ void App::renderAudioIndicator() {
     ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::Begin("AudioIndicator", nullptr, flags);
     ImGui::SetWindowFontScale(2.0f);
-    ImGui::TextUnformatted("[ AUDIO ]");
+    {
+        VertexScaleScope textScope(textScaleX_, textScaleY_);
+        ImGui::TextUnformatted("[ AUDIO ]");
+    }
     ImGui::SetWindowFontScale(1.0f);
     ImGui::End();
 }
@@ -742,6 +813,11 @@ void App::renderAudioIndicator() {
 // keyboard-only by design (see PLAN.md), so losing incidental mouse
 // click-to-select on those two styles is an acceptable tradeoff.
 void App::drawMenuRow(const std::string& label, bool selected) {
+    // Scales this whole row (marker/underline + its text, or the
+    // highlight bar + its text) as one unit from the row's own top-left,
+    // so a marker/underline stays attached to the text it's marking.
+    VertexScaleScope textScope(textScaleX_, textScaleY_);
+
     switch (selectionStyleIndex_) {
         case 1: {  // Marker
             const float lineHeight = ImGui::GetTextLineHeight();
@@ -783,11 +859,13 @@ void App::drawMenuRow(const std::string& label, bool selected) {
     }
 }
 
-// Positions the next ImGui window per the configurable menuPositionIndex_
-// setting (a screen anchor + pivot), instead of a fixed top-left/fullscreen
-// placement. Shared by all menu-family screens (root menu, file browser,
-// settings) so the "menu screen position" setting affects them uniformly.
-void App::positionMenuWindow() const {
+// The screen-space point of the configured menuPositionIndex_ anchor
+// corner. This is exactly the `pos` positionMenuWindow() passes to
+// SetNextWindowPos() -- by construction, that's the one point of the
+// window that ImGui pins in place regardless of the window's size, which
+// makes it the natural, lag-free anchor for menu-stretch scaling too (no
+// need to wait a frame for GetWindowPos()/GetWindowSize() to settle).
+ImVec2 App::menuPivotAnchor() const {
     // ImGui positioning is in its own logical coordinate space (ImGuiIO::
     // DisplaySize -- the GLFW *window* size), not the raw GL framebuffer
     // pixel size; those differ by the display scale factor on HiDPI/Retina
@@ -795,30 +873,45 @@ void App::positionMenuWindow() const {
     // pivot (verified: "Center" landed in the bottom-right corner on a 2x
     // display before this fix).
     const ImVec2 display = ImGui::GetIO().DisplaySize;
-
     constexpr float kMargin = 24.0f;
-    ImVec2 pos;
+    switch (menuPositionIndex_) {
+        case 0:  // Top Left
+            return ImVec2(kMargin, kMargin);
+        case 1:  // Top Right
+            return ImVec2(display.x - kMargin, kMargin);
+        case 2:  // Center
+            return ImVec2(display.x * 0.5f, display.y * 0.5f);
+        case 3:  // Bottom Left
+            return ImVec2(kMargin, display.y - kMargin);
+        case 4:  // Bottom Right
+        default:
+            return ImVec2(display.x - kMargin, display.y - kMargin);
+    }
+}
+
+// Positions the next ImGui window per the configurable menuPositionIndex_
+// setting (a screen anchor + pivot), instead of a fixed top-left/fullscreen
+// placement. Shared by all menu-family screens (root menu, file browser,
+// settings) so the "menu screen position" setting affects them uniformly.
+void App::positionMenuWindow() const {
+    const ImVec2 pos = menuPivotAnchor();
+
     ImVec2 pivot;
     switch (menuPositionIndex_) {
         case 0:  // Top Left
-            pos = ImVec2(kMargin, kMargin);
             pivot = ImVec2(0.0f, 0.0f);
             break;
         case 1:  // Top Right
-            pos = ImVec2(display.x - kMargin, kMargin);
             pivot = ImVec2(1.0f, 0.0f);
             break;
         case 2:  // Center
-            pos = ImVec2(display.x * 0.5f, display.y * 0.5f);
             pivot = ImVec2(0.5f, 0.5f);
             break;
         case 3:  // Bottom Left
-            pos = ImVec2(kMargin, display.y - kMargin);
             pivot = ImVec2(0.0f, 1.0f);
             break;
         case 4:  // Bottom Right
         default:
-            pos = ImVec2(display.x - kMargin, display.y - kMargin);
             pivot = ImVec2(1.0f, 1.0f);
             break;
     }
@@ -832,35 +925,62 @@ void App::renderMenu() {
                                     ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoBringToFrontOnFocus;
 
     positionMenuWindow();
+    const ImVec2 anchor = menuPivotAnchor();
     ImGui::Begin("PVM Menu", nullptr, flags);
+    // ImGui auto-sizes the window from *unscaled* content, then clips
+    // drawing to that window rect; without this, a stretched (menu/text
+    // scale > 1) panel gets its overflow silently cut off at what would
+    // have been its unstretched edge. Widening the clip rect to the whole
+    // display sidesteps that -- there's nothing else on these screens to
+    // accidentally draw over.
+    ImGui::PushClipRect(ImVec2(0.0f, 0.0f), ImGui::GetIO().DisplaySize, false);
 
-    ImGui::TextUnformatted("MENU");
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    if (screen_ == Screen::RootMenu) {
-        drawScrollableRows(static_cast<int>(rootMenu_.items().size()), rootMenu_.selectedIndex(),
-                            [&](int i) { return rootMenu_.items()[i].label; });
-    } else {  // Screen::FileBrowser or Screen::PickStartDirectory
-        const bool picking = screen_ == Screen::PickStartDirectory;
-        ImGui::Text("%s  (%s)", picking ? "SELECT FOLDER" : "SELECT FILE",
-                    fileBrowser_.currentPathLabel().c_str());
+    {
+        VertexScaleScope menuScope(menuScaleX_, menuScaleY_, anchor);
+        {
+            VertexScaleScope textScope(textScaleX_, textScaleY_);
+            ImGui::TextUnformatted("MENU");
+        }
+        ImGui::Separator();
         ImGui::Spacing();
-        if (fileBrowser_.empty()) {
-            ImGui::TextDisabled("(no matching files found)");
-        } else {
-            const auto& entries = fileBrowser_.entries();
-            drawScrollableRows(static_cast<int>(entries.size()), fileBrowser_.selectedIndex(), [&](int i) {
-                return entries[i].isDirectory ? entries[i].name + "/" : entries[i].name;
-            });
+
+        if (screen_ != Screen::RootMenu) {
+            const bool picking = screen_ == Screen::PickStartDirectory;
+            {
+                VertexScaleScope textScope(textScaleX_, textScaleY_);
+                ImGui::Text("%s  (%s)", picking ? "SELECT FOLDER" : "SELECT FILE",
+                            fileBrowser_.currentPathLabel().c_str());
+            }
+            ImGui::Spacing();
         }
     }
 
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::TextDisabled("%s", screen_ == Screen::RootMenu ? "UP/DOWN: Move   ENTER: Select   ESC: Exit"
-                                                            : "UP/DOWN: Move   ENTER: Open   ESC: Back");
+    if (screen_ == Screen::RootMenu) {
+        drawScrollableRows(static_cast<int>(rootMenu_.items().size()), rootMenu_.selectedIndex(),
+                            [&](int i) { return rootMenu_.items()[i].label; }, anchor);
+    } else if (fileBrowser_.empty()) {
+        VertexScaleScope menuScope(menuScaleX_, menuScaleY_, anchor);
+        VertexScaleScope textScope(textScaleX_, textScaleY_);
+        ImGui::TextDisabled("(no matching files found)");
+    } else {
+        const auto& entries = fileBrowser_.entries();
+        drawScrollableRows(
+            static_cast<int>(entries.size()), fileBrowser_.selectedIndex(),
+            [&](int i) { return entries[i].isDirectory ? entries[i].name + "/" : entries[i].name; }, anchor);
+    }
 
+    {
+        VertexScaleScope menuScope(menuScaleX_, menuScaleY_, anchor);
+        ImGui::Spacing();
+        ImGui::Separator();
+        {
+            VertexScaleScope textScope(textScaleX_, textScaleY_);
+            ImGui::TextDisabled("%s", screen_ == Screen::RootMenu ? "UP/DOWN: Move   ENTER: Select   ESC: Exit"
+                                                                    : "UP/DOWN: Move   ENTER: Open   ESC: Back");
+        }
+    }
+
+    ImGui::PopClipRect();
     ImGui::End();
 
     ImGui::Render();
@@ -871,17 +991,39 @@ void App::renderMenu() {
 // the settings screen's dozen-odd rows) get a fixed-height scrolling
 // region instead of growing the window past the screen; the selected row
 // is kept in view as it moves. Shared by renderMenu() and renderSettings().
-void App::drawScrollableRows(int count, int selectedIndex, const std::function<std::string(int)>& labelFor) {
+void App::drawScrollableRows(int count, int selectedIndex, const std::function<std::string(int)>& labelFor,
+                              ImVec2 anchor) {
     const float itemHeight = ImGui::GetTextLineHeightWithSpacing();
     const float maxListHeight = ImGui::GetIO().DisplaySize.y * 0.5f;
     const float listHeight = std::min(static_cast<float>(count) * itemHeight, maxListHeight);
     ImGui::BeginChild("MenuList", ImVec2(0.0f, listHeight));
-    for (int i = 0; i < count; ++i) {
-        const bool selected = (i == selectedIndex);
-        drawMenuRow(labelFor(i), selected);
-        if (selected) {
-            ImGui::SetScrollHereY(0.5f);
+    {
+        // Widen the child's clip rect horizontally only (keep its own
+        // vertical extent, so the intentional vertical clip/scroll for a
+        // long list still works) -- otherwise a horizontally-stretched row
+        // (menu or text scale X > 1) gets cut off at what would have been
+        // its unstretched width. See the matching PushClipRect in
+        // renderMenu()/renderSettings() for the same issue at the window
+        // level.
+        const ImVec2 clipMin = ImGui::GetWindowDrawList()->GetClipRectMin();
+        const ImVec2 clipMax = ImGui::GetWindowDrawList()->GetClipRectMax();
+        ImGui::PushClipRect(ImVec2(0.0f, clipMin.y), ImVec2(ImGui::GetIO().DisplaySize.x, clipMax.y), false);
+
+        // ImGui child windows get their own ImDrawList (see VertexScaleScope's
+        // comment), so menu-scale needs its own scope here rather than being
+        // covered by the one in renderMenu()/renderSettings(). SetScrollHereY()
+        // below still reasons about unscaled positions -- scroll-to-selection
+        // stays correct, but very large vertical stretch can still clip
+        // against the child's fixed-height viewport rather than growing it.
+        VertexScaleScope menuScope(menuScaleX_, menuScaleY_, anchor);
+        for (int i = 0; i < count; ++i) {
+            const bool selected = (i == selectedIndex);
+            drawMenuRow(labelFor(i), selected);
+            if (selected) {
+                ImGui::SetScrollHereY(0.5f);
+            }
         }
+        ImGui::PopClipRect();
     }
     ImGui::EndChild();
 }
@@ -892,20 +1034,36 @@ void App::renderSettings() {
                                     ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoBringToFrontOnFocus;
 
     positionMenuWindow();
+    const ImVec2 anchor = menuPivotAnchor();
     ImGui::Begin("PVM Settings", nullptr, flags);
+    ImGui::PushClipRect(ImVec2(0.0f, 0.0f), ImGui::GetIO().DisplaySize, false);
 
-    ImGui::TextUnformatted("SETTINGS");
-    ImGui::Separator();
-    ImGui::Spacing();
+    {
+        VertexScaleScope menuScope(menuScaleX_, menuScaleY_, anchor);
+        {
+            VertexScaleScope textScope(textScaleX_, textScaleY_);
+            ImGui::TextUnformatted("SETTINGS");
+        }
+        ImGui::Separator();
+        ImGui::Spacing();
+    }
 
     const std::vector<SettingsRowDesc> rows = buildSettingsRows();
-    drawScrollableRows(static_cast<int>(rows.size()), settingsSelectedRow_,
-                        [&](int i) { return formatSettingsRow(rows[static_cast<size_t>(i)]); });
+    drawScrollableRows(
+        static_cast<int>(rows.size()), settingsSelectedRow_,
+        [&](int i) { return formatSettingsRow(rows[static_cast<size_t>(i)]); }, anchor);
 
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::TextDisabled("UP/DOWN: Move   LEFT/RIGHT: Change   ESC: Back");
+    {
+        VertexScaleScope menuScope(menuScaleX_, menuScaleY_, anchor);
+        ImGui::Spacing();
+        ImGui::Separator();
+        {
+            VertexScaleScope textScope(textScaleX_, textScaleY_);
+            ImGui::TextDisabled("UP/DOWN: Move   LEFT/RIGHT: Change   ESC: Back");
+        }
+    }
 
+    ImGui::PopClipRect();
     ImGui::End();
 
     ImGui::Render();
@@ -980,6 +1138,15 @@ std::vector<App::SettingsRowDesc> App::buildSettingsRows() {
     selectionStyleRow.enumPtr = &selectionStyleIndex_;
     selectionStyleRow.enumNames = &kSelectionStyleNames;
     rows.push_back(selectionStyleRow);
+
+    // Independent X/Y stretch. 1.00 is "no change"; the ranges below (up
+    // to 3x, down to 0.3x) are chosen generously since "stretch" implies
+    // going well past subtle -- there's no other correctness reason to
+    // cap them there.
+    rows.push_back(floatRow("Menu Scale X", &menuScaleX_, 0.3f, 3.0f, 0.05f));
+    rows.push_back(floatRow("Menu Scale Y", &menuScaleY_, 0.3f, 3.0f, 0.05f));
+    rows.push_back(floatRow("Text Scale X", &textScaleX_, 0.3f, 3.0f, 0.05f));
+    rows.push_back(floatRow("Text Scale Y", &textScaleY_, 0.3f, 3.0f, 0.05f));
 
     rows.push_back(boolRow("Hidden Files", &showHiddenFiles_, "Show", "Hide"));
 

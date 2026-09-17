@@ -92,6 +92,14 @@ bool loadSettings(const std::string& path, AppSettings& settings) {
             ok = parseInt(value, settings.menuPositionIndex);
         } else if (key == "selection_style") {
             ok = parseInt(value, settings.selectionStyleIndex);
+        } else if (key == "menu_scale_x") {
+            ok = parseFloat(value, settings.menuScaleX);
+        } else if (key == "menu_scale_y") {
+            ok = parseFloat(value, settings.menuScaleY);
+        } else if (key == "text_scale_x") {
+            ok = parseFloat(value, settings.textScaleX);
+        } else if (key == "text_scale_y") {
+            ok = parseFloat(value, settings.textScaleY);
         } else if (key == "start_directory") {
             settings.startDirectory = value;
         } else if (key == "last_used_directory") {
@@ -144,6 +152,10 @@ bool saveSettings(const std::string& path, const AppSettings& settings) {
     file << "font_file=" << settings.fontFile << "\n";
     file << "menu_position=" << settings.menuPositionIndex << "\n";
     file << "selection_style=" << settings.selectionStyleIndex << "\n";
+    file << "menu_scale_x=" << settings.menuScaleX << "\n";
+    file << "menu_scale_y=" << settings.menuScaleY << "\n";
+    file << "text_scale_x=" << settings.textScaleX << "\n";
+    file << "text_scale_y=" << settings.textScaleY << "\n";
     file << "start_directory=" << settings.startDirectory << "\n";
     file << "last_used_directory=" << settings.lastUsedDirectory << "\n";
     file << "show_hidden_files=" << (settings.showHiddenFiles ? "true" : "false") << "\n";
