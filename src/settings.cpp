@@ -88,6 +88,8 @@ bool loadSettings(const std::string& path, AppSettings& settings) {
             ok = parseInt(value, settings.fontSizePx);
         } else if (key == "font_file") {
             settings.fontFile = value;
+        } else if (key == "text_outline_index") {
+            ok = parseInt(value, settings.textOutlineIndex);
         } else if (key == "menu_position") {
             ok = parseInt(value, settings.menuPositionIndex);
         } else if (key == "selection_style") {
@@ -160,6 +162,7 @@ bool saveSettings(const std::string& path, const AppSettings& settings) {
     file << "# want to tweak it by hand while the app isn't running.\n";
     file << "font_size=" << settings.fontSizePx << "\n";
     file << "font_file=" << settings.fontFile << "\n";
+    file << "text_outline_index=" << settings.textOutlineIndex << "\n";
     file << "menu_position=" << settings.menuPositionIndex << "\n";
     file << "selection_style=" << settings.selectionStyleIndex << "\n";
     file << "menu_scale_x=" << settings.menuScaleX << "\n";

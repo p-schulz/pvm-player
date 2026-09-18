@@ -11,6 +11,8 @@ struct AppSettings {
     // Filename (not a full path) of the selected font within the fonts
     // directory, or "" to use the bundled default.
     std::string fontFile;
+    // Text outline: 0=OFF, 1=BLACK, 2=GREEN; see App::drawOutlinedText().
+    int textOutlineIndex = 0;
     int menuPositionIndex = 0;
     int selectionStyleIndex = 0;
     bool showHiddenFiles = false;

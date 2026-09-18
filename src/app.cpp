@@ -277,6 +277,21 @@ const std::vector<std::string> kAspectRatioValues = {"no", "4:3", "5:4", "16:9",
 // zoom to fill, cropping overflow, no distortion). See App::renderFrame().
 const std::vector<std::string> kVideoScaleModeNames = {"FIT", "FILL", "CROP"};
 
+// Text outline: also adjustable via the settings screen; see
+// App::drawOutlinedText().
+const std::vector<std::string> kTextOutlineNames = {"OFF", "BLACK", "GREEN"};
+
+ImVec4 textOutlineColor(int index) {
+    switch (index) {
+        case 1:
+            return ImVec4(0.0f, 0.0f, 0.0f, 1.0f);  // BLACK
+        case 2:
+            return ImVec4(0.05f, 0.85f, 0.15f, 1.0f);  // GREEN
+        default:
+            return ImVec4(0.0f, 0.0f, 0.0f, 0.0f);  // OFF -- never actually sampled
+    }
+}
+
 // Shortens a long path for display in a settings row (the stored value
 // itself is never truncated) so a deeply nested directory doesn't blow up
 // the auto-sized settings panel's width.
@@ -364,6 +379,7 @@ bool App::init(int width, int height, const char* title) {
     AppSettings loadedSettings;
     loadedSettings.fontSizePx = fontSizePx_;
     loadedSettings.fontFile = selectedFontFile_;
+    loadedSettings.textOutlineIndex = textOutlineIndex_;
     loadedSettings.menuPositionIndex = menuPositionIndex_;
     loadedSettings.selectionStyleIndex = selectionStyleIndex_;
     loadedSettings.menuScaleX = menuScaleX_;
@@ -402,6 +418,10 @@ bool App::init(int width, int height, const char* title) {
     }
     // A font_file naming a file that's gone missing (or empty/first run)
     // silently falls back to Default above -- not an error.
+
+    const int textOutlineCount = static_cast<int>(kTextOutlineNames.size());
+    textOutlineIndex_ =
+        ((loadedSettings.textOutlineIndex % textOutlineCount) + textOutlineCount) % textOutlineCount;
 
     menuPositionIndex_ = loadedSettings.menuPositionIndex % static_cast<int>(kMenuPositionNames.size());
     if (menuPositionIndex_ < 0) {
@@ -593,6 +613,7 @@ void App::saveCurrentSettings() const {
     AppSettings settings;
     settings.fontSizePx = fontSizePx_;
     settings.fontFile = selectedFontFile_;
+    settings.textOutlineIndex = textOutlineIndex_;
     settings.menuPositionIndex = menuPositionIndex_;
     settings.selectionStyleIndex = selectionStyleIndex_;
     settings.menuScaleX = menuScaleX_;
@@ -890,15 +911,13 @@ void App::renderPlaybackHud() {
         // No "menu scale" here -- the playback HUD isn't a menu screen --
         // but text scale still applies everywhere text is drawn.
         VertexScaleScope textScope(textScaleX_, textScaleY_);
-        if (!mpv_.filename().empty()) {
-            ImGui::Text("%s", basename(mpv_.filename()).c_str());
-        } else {
-            ImGui::Text("(no media loaded)");
-        }
+        drawOutlinedText(mpv_.filename().empty() ? "(no media loaded)" : basename(mpv_.filename()));
 
-        ImGui::Text("%s / %s", formatTimestamp(mpv_.timePositionSeconds()).c_str(),
-                    formatTimestamp(mpv_.durationSeconds()).c_str());
-        ImGui::Text("%s", mpv_.isPaused() ? "PAUSED" : "PLAYING");
+        char timeLine[64];
+        std::snprintf(timeLine, sizeof(timeLine), "%s / %s", formatTimestamp(mpv_.timePositionSeconds()).c_str(),
+                      formatTimestamp(mpv_.durationSeconds()).c_str());
+        drawOutlinedText(timeLine);
+        drawOutlinedText(mpv_.isPaused() ? "PAUSED" : "PLAYING");
     }
 
     ImGui::End();
@@ -936,7 +955,7 @@ void App::renderAudioIndicator() {
     ImGui::SetWindowFontScale(2.0f);
     {
         VertexScaleScope textScope(textScaleX_, textScaleY_);
-        ImGui::TextUnformatted("[ AUDIO ]");
+        drawOutlinedText("[ AUDIO ]");
     }
     ImGui::SetWindowFontScale(1.0f);
     ImGui::End();
@@ -994,7 +1013,7 @@ void App::renderOsdMenu() {
 
     {
         VertexScaleScope textScope(textScaleX_, textScaleY_);
-        ImGui::TextUnformatted("MENU");
+        drawOutlinedText("MENU");
     }
 
     const std::vector<SettingsRowDesc> rows = buildOsdRows();
@@ -1002,13 +1021,51 @@ void App::renderOsdMenu() {
         const bool selected = (i == osdSelectedRow_);
         const std::string line = (selected ? "> " : "  ") + formatOsdRow(rows[static_cast<size_t>(i)]);
         VertexScaleScope textScope(textScaleX_, textScaleY_);
-        ImGui::TextUnformatted(line.c_str());
+        drawOutlinedText(line);
     }
 
     ImGui::End();
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+}
+
+// Draws `text` at the current cursor position with an outline (8 copies
+// offset by 1px in outlineColorFor(textOutlineIndex_), drawn first) if
+// textOutlineIndex_ != 0, then the real text on top in `mainColor` --
+// ImGui's font atlas has no native glyph outline/stroke, so this is the
+// standard cheap multi-draw trick for one. The offset copies use
+// SetCursorScreenPos() to land exactly on top of each other rather than
+// stacking as separate lines; only the final (main-color) draw is left to
+// advance the layout cursor normally, so callers can treat this exactly
+// like a plain TextUnformatted() otherwise.
+void App::drawOutlinedTextColored(const std::string& text, const ImVec4& mainColor) {
+    if (text.empty()) {
+        return;
+    }
+    if (textOutlineIndex_ != 0) {
+        static constexpr float kOffsets[8][2] = {{-1, -1}, {0, -1}, {1, -1}, {-1, 0},
+                                                  {1, 0},   {-1, 1}, {0, 1},  {1, 1}};
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        ImGui::PushStyleColor(ImGuiCol_Text, textOutlineColor(textOutlineIndex_));
+        for (const auto& offset : kOffsets) {
+            ImGui::SetCursorScreenPos(ImVec2(origin.x + offset[0], origin.y + offset[1]));
+            ImGui::TextUnformatted(text.c_str());
+        }
+        ImGui::PopStyleColor();
+        ImGui::SetCursorScreenPos(origin);
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, mainColor);
+    ImGui::TextUnformatted(text.c_str());
+    ImGui::PopStyleColor();
+}
+
+void App::drawOutlinedText(const std::string& text) {
+    drawOutlinedTextColored(text, ImGui::GetStyle().Colors[ImGuiCol_Text]);
+}
+
+void App::drawOutlinedTextDisabled(const std::string& text) {
+    drawOutlinedTextColored(text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
 }
 
 // Row-selection visual style, adjustable via the settings screen
@@ -1043,13 +1100,13 @@ void App::drawMenuRow(const std::string& label, bool selected) {
                     ImVec2(rowStart.x + boxSize, rowStart.y + boxPad + boxSize), IM_COL32(255, 255, 255, 255));
             }
             ImGui::Indent(indent);
-            ImGui::TextUnformatted(label.c_str());
+            drawOutlinedText(label);
             ImGui::Unindent(indent);
             break;
         }
         case 2: {  // Underline
             const ImVec2 textStart = ImGui::GetCursorScreenPos();
-            ImGui::TextUnformatted(label.c_str());
+            drawOutlinedText(label);
             if (selected) {
                 const ImVec2 textSize = ImGui::CalcTextSize(label.c_str());
                 const float y = textStart.y + textSize.y - 1.0f;
@@ -1151,7 +1208,7 @@ void App::renderMenu() {
         VertexScaleScope menuScope(menuScaleX_, menuScaleY_, anchor);
         {
             VertexScaleScope textScope(textScaleX_, textScaleY_);
-            ImGui::TextUnformatted("MENU");
+            drawOutlinedText("MENU");
         }
         ImGui::Separator();
         ImGui::Spacing();
@@ -1160,8 +1217,10 @@ void App::renderMenu() {
             const bool picking = screen_ == Screen::PickStartDirectory;
             {
                 VertexScaleScope textScope(textScaleX_, textScaleY_);
-                ImGui::Text("%s  (%s)", picking ? "SELECT FOLDER" : "SELECT FILE",
-                            fileBrowser_.currentPathLabel().c_str());
+                char header[512];
+                std::snprintf(header, sizeof(header), "%s  (%s)", picking ? "SELECT FOLDER" : "SELECT FILE",
+                              fileBrowser_.currentPathLabel().c_str());
+                drawOutlinedText(header);
             }
             ImGui::Spacing();
         }
@@ -1173,7 +1232,7 @@ void App::renderMenu() {
     } else if (fileBrowser_.empty()) {
         VertexScaleScope menuScope(menuScaleX_, menuScaleY_, anchor);
         VertexScaleScope textScope(textScaleX_, textScaleY_);
-        ImGui::TextDisabled("(no matching files found)");
+        drawOutlinedTextDisabled("(no matching files found)");
     } else {
         const auto& entries = fileBrowser_.entries();
         drawScrollableRows(
@@ -1187,8 +1246,8 @@ void App::renderMenu() {
         ImGui::Separator();
         {
             VertexScaleScope textScope(textScaleX_, textScaleY_);
-            ImGui::TextDisabled("%s", screen_ == Screen::RootMenu ? "UP/DOWN: Move   ENTER: Select   ESC: Exit"
-                                                                    : "UP/DOWN: Move   ENTER: Open   ESC: Back");
+            drawOutlinedTextDisabled(screen_ == Screen::RootMenu ? "UP/DOWN: Move   ENTER: Select   ESC: Exit"
+                                                                  : "UP/DOWN: Move   ENTER: Open   ESC: Back");
         }
     }
 
@@ -1254,7 +1313,7 @@ void App::renderSettings() {
         VertexScaleScope menuScope(menuScaleX_, menuScaleY_, anchor);
         {
             VertexScaleScope textScope(textScaleX_, textScaleY_);
-            ImGui::TextUnformatted("SETTINGS");
+            drawOutlinedText("SETTINGS");
         }
         ImGui::Separator();
         ImGui::Spacing();
@@ -1271,7 +1330,7 @@ void App::renderSettings() {
         ImGui::Separator();
         {
             VertexScaleScope textScope(textScaleX_, textScaleY_);
-            ImGui::TextDisabled("UP/DOWN: Move   LEFT/RIGHT: Change   ESC: Back");
+            drawOutlinedTextDisabled("UP/DOWN: Move   LEFT/RIGHT: Change   ESC: Back");
         }
     }
 
@@ -1352,6 +1411,13 @@ std::vector<App::SettingsRowDesc> App::buildSettingsRows() {
         applyFont();
     };
     rows.push_back(fontRow);
+
+    SettingsRowDesc textOutlineRow;
+    textOutlineRow.type = SettingsRowType::Enum;
+    textOutlineRow.label = "Text Outline";
+    textOutlineRow.enumPtr = &textOutlineIndex_;
+    textOutlineRow.enumNames = &kTextOutlineNames;
+    rows.push_back(textOutlineRow);
 
     SettingsRowDesc positionRow;
     positionRow.type = SettingsRowType::Enum;

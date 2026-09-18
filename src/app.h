@@ -11,6 +11,7 @@
 struct GLFWwindow;
 struct GLFWmonitor;
 struct ImVec2;
+struct ImVec4;
 
 // Owns the GLFW window + OpenGL context and drives the main loop.
 class App {
@@ -97,6 +98,18 @@ private:
     void renderMenu();
     void renderSettings();
     void drawMenuRow(const std::string& label, bool selected);
+    // Text with an optional outline (textOutlineIndex_ != 0): drawn as 8
+    // offset copies in the outline color underneath, then the real text on
+    // top in `mainColor` -- ImGui has no native glyph outline/stroke, so
+    // this is the standard cheap trick for it. drawOutlinedText()/
+    // drawOutlinedTextDisabled() are the normal-color/dim-color
+    // convenience wrappers used at most call sites. Not used for the
+    // Highlight selection style's ImGui::Selectable() text (it draws its
+    // own text internally, and its reverse-video look already has strong
+    // contrast without an outline).
+    void drawOutlinedTextColored(const std::string& text, const ImVec4& mainColor);
+    void drawOutlinedText(const std::string& text);
+    void drawOutlinedTextDisabled(const std::string& text);
     // `anchor` is the screen-space point that stays fixed while the list's
     // content is stretched by menuScaleX_/menuScaleY_ (see
     // VertexScaleScope in app.cpp) -- callers pass the same anchor used
@@ -180,6 +193,10 @@ private:
     // scanAvailableMonitors()/resolveMonitor().
     int monitorIndex_ = 0;
     std::vector<std::string> monitorChoiceNames_;
+
+    // Text outline ("Text Outline" settings row, persisted): indexes
+    // kTextOutlineNames (OFF/BLACK/GREEN) -- see drawOutlinedText().
+    int textOutlineIndex_ = 0;
 
     unsigned int blitProgram_ = 0;
     unsigned int blitVao_ = 0;
