@@ -11,8 +11,18 @@ struct AppSettings {
     // Filename (not a full path) of the selected font within the fonts
     // directory, or "" to use the bundled default.
     std::string fontFile;
-    // Text outline: 0=OFF, 1=BLACK, 2=GREEN; see App::drawOutlinedText().
-    int textOutlineIndex = 0;
+    // Text outline; see App::drawOutlinedTextColored(). Color components
+    // are 0-255; strength is the offset-copy radius in pixels.
+    bool outlineEnabled = false;
+    int outlineR = 0;
+    int outlineG = 0;
+    int outlineB = 0;
+    int outlineStrength = 1;
+
+    // Main text color, 0-255 each; see App::applyTextColor().
+    int fontR = 255;
+    int fontG = 255;
+    int fontB = 255;
     int menuPositionIndex = 0;
     int selectionStyleIndex = 0;
     bool showHiddenFiles = false;

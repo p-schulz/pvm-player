@@ -88,8 +88,22 @@ bool loadSettings(const std::string& path, AppSettings& settings) {
             ok = parseInt(value, settings.fontSizePx);
         } else if (key == "font_file") {
             settings.fontFile = value;
-        } else if (key == "text_outline_index") {
-            ok = parseInt(value, settings.textOutlineIndex);
+        } else if (key == "outline_enabled") {
+            ok = parseBool(value, settings.outlineEnabled);
+        } else if (key == "outline_r") {
+            ok = parseInt(value, settings.outlineR);
+        } else if (key == "outline_g") {
+            ok = parseInt(value, settings.outlineG);
+        } else if (key == "outline_b") {
+            ok = parseInt(value, settings.outlineB);
+        } else if (key == "outline_strength") {
+            ok = parseInt(value, settings.outlineStrength);
+        } else if (key == "font_r") {
+            ok = parseInt(value, settings.fontR);
+        } else if (key == "font_g") {
+            ok = parseInt(value, settings.fontG);
+        } else if (key == "font_b") {
+            ok = parseInt(value, settings.fontB);
         } else if (key == "menu_position") {
             ok = parseInt(value, settings.menuPositionIndex);
         } else if (key == "selection_style") {
@@ -162,7 +176,14 @@ bool saveSettings(const std::string& path, const AppSettings& settings) {
     file << "# want to tweak it by hand while the app isn't running.\n";
     file << "font_size=" << settings.fontSizePx << "\n";
     file << "font_file=" << settings.fontFile << "\n";
-    file << "text_outline_index=" << settings.textOutlineIndex << "\n";
+    file << "outline_enabled=" << (settings.outlineEnabled ? "true" : "false") << "\n";
+    file << "outline_r=" << settings.outlineR << "\n";
+    file << "outline_g=" << settings.outlineG << "\n";
+    file << "outline_b=" << settings.outlineB << "\n";
+    file << "outline_strength=" << settings.outlineStrength << "\n";
+    file << "font_r=" << settings.fontR << "\n";
+    file << "font_g=" << settings.fontG << "\n";
+    file << "font_b=" << settings.fontB << "\n";
     file << "menu_position=" << settings.menuPositionIndex << "\n";
     file << "selection_style=" << settings.selectionStyleIndex << "\n";
     file << "menu_scale_x=" << settings.menuScaleX << "\n";

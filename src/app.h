@@ -98,18 +98,26 @@ private:
     void renderMenu();
     void renderSettings();
     void drawMenuRow(const std::string& label, bool selected);
-    // Text with an optional outline (textOutlineIndex_ != 0): drawn as 8
-    // offset copies in the outline color underneath, then the real text on
-    // top in `mainColor` -- ImGui has no native glyph outline/stroke, so
-    // this is the standard cheap trick for it. drawOutlinedText()/
-    // drawOutlinedTextDisabled() are the normal-color/dim-color
-    // convenience wrappers used at most call sites. Not used for the
-    // Highlight selection style's ImGui::Selectable() text (it draws its
-    // own text internally, and its reverse-video look already has strong
-    // contrast without an outline).
+    // Text with an optional outline (outlineEnabled_): drawn as offset
+    // copies (offset magnitude = outlineStrength_ px) in outline{R,G,B}_
+    // underneath, then the real text on top in `mainColor` -- ImGui has no
+    // native glyph outline/stroke, so this is the standard cheap trick for
+    // one. drawOutlinedText()/drawOutlinedTextDisabled() are the
+    // normal-color/dim-color convenience wrappers used at most call
+    // sites. Not used for the Highlight selection style's
+    // ImGui::Selectable() text (it draws its own text internally, and its
+    // reverse-video look already has strong contrast without an outline).
     void drawOutlinedTextColored(const std::string& text, const ImVec4& mainColor);
     void drawOutlinedText(const std::string& text);
     void drawOutlinedTextDisabled(const std::string& text);
+    // Pushes font{R,G,B}_ into ImGui's global ImGuiCol_Text style color, so
+    // every native ImGui text draw (including the Highlight selection
+    // style's own ImGui::Selectable() text) and drawOutlinedText() (which
+    // reads that same style color as its default `mainColor`) immediately
+    // pick up the user's chosen font color. Called once after
+    // ui::applyPvmStyle() at startup and again from each Font R/G/B
+    // settings row's change callback.
+    void applyTextColor();
     // `anchor` is the screen-space point that stays fixed while the list's
     // content is stretched by menuScaleX_/menuScaleY_ (see
     // VertexScaleScope in app.cpp) -- callers pass the same anchor used
@@ -118,12 +126,19 @@ private:
     // (ImGui child windows get their own ImDrawList, so this can't be done
     // with a single scope wrapping the whole Begin/End call).
     void drawScrollableRows(int count, int selectedIndex, const std::function<std::string(int)>& labelFor,
-                             ImVec2 anchor);
+                             ImVec2 anchor, float maxListHeight);
     void positionMenuWindow() const;
     // The screen-space point of the current ImGui window's configured
     // pivot corner (menuPositionIndex_), used as the fixed anchor for both
     // positioning (positionMenuWindow()) and menu-stretch scaling.
     ImVec2 menuPivotAnchor() const;
+    // How tall drawScrollableRows()'s scrolling child may grow (its
+    // `maxListHeight`) so the whole menu window -- whatever's already been
+    // drawn above the list (title/header) plus a fixed footer allowance --
+    // fits within the display height minus a margin on each side. Must be
+    // called right before the corresponding drawScrollableRows(), after
+    // that screen's header content so ImGui::GetCursorPosY() reflects it.
+    float computeListHeightBudget() const;
 
     std::vector<SettingsRowDesc> buildSettingsRows();
     static std::string formatSettingsRow(const SettingsRowDesc& row);
@@ -194,9 +209,21 @@ private:
     int monitorIndex_ = 0;
     std::vector<std::string> monitorChoiceNames_;
 
-    // Text outline ("Text Outline" settings row, persisted): indexes
-    // kTextOutlineNames (OFF/BLACK/GREEN) -- see drawOutlinedText().
-    int textOutlineIndex_ = 0;
+    // Text outline ("Outline"/"Outline R/G/B"/"Outline Strength" settings
+    // rows, persisted) -- see drawOutlinedTextColored(). Color components
+    // are 0-255; strength is the offset-copy radius in pixels.
+    bool outlineEnabled_ = false;
+    int outlineR_ = 0;
+    int outlineG_ = 0;
+    int outlineB_ = 0;
+    int outlineStrength_ = 1;
+
+    // Main text color ("Font R/G/B" settings rows, persisted), 0-255 each;
+    // applied to ImGui's global text style by applyTextColor(). Defaults
+    // to white, matching the previous hardcoded look.
+    int fontR_ = 255;
+    int fontG_ = 255;
+    int fontB_ = 255;
 
     unsigned int blitProgram_ = 0;
     unsigned int blitVao_ = 0;

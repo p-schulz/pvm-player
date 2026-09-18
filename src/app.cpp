@@ -277,21 +277,6 @@ const std::vector<std::string> kAspectRatioValues = {"no", "4:3", "5:4", "16:9",
 // zoom to fill, cropping overflow, no distortion). See App::renderFrame().
 const std::vector<std::string> kVideoScaleModeNames = {"FIT", "FILL", "CROP"};
 
-// Text outline: also adjustable via the settings screen; see
-// App::drawOutlinedText().
-const std::vector<std::string> kTextOutlineNames = {"OFF", "BLACK", "GREEN"};
-
-ImVec4 textOutlineColor(int index) {
-    switch (index) {
-        case 1:
-            return ImVec4(0.0f, 0.0f, 0.0f, 1.0f);  // BLACK
-        case 2:
-            return ImVec4(0.05f, 0.85f, 0.15f, 1.0f);  // GREEN
-        default:
-            return ImVec4(0.0f, 0.0f, 0.0f, 0.0f);  // OFF -- never actually sampled
-    }
-}
-
 // Shortens a long path for display in a settings row (the stored value
 // itself is never truncated) so a deeply nested directory doesn't blow up
 // the auto-sized settings panel's width.
@@ -379,7 +364,14 @@ bool App::init(int width, int height, const char* title) {
     AppSettings loadedSettings;
     loadedSettings.fontSizePx = fontSizePx_;
     loadedSettings.fontFile = selectedFontFile_;
-    loadedSettings.textOutlineIndex = textOutlineIndex_;
+    loadedSettings.outlineEnabled = outlineEnabled_;
+    loadedSettings.outlineR = outlineR_;
+    loadedSettings.outlineG = outlineG_;
+    loadedSettings.outlineB = outlineB_;
+    loadedSettings.outlineStrength = outlineStrength_;
+    loadedSettings.fontR = fontR_;
+    loadedSettings.fontG = fontG_;
+    loadedSettings.fontB = fontB_;
     loadedSettings.menuPositionIndex = menuPositionIndex_;
     loadedSettings.selectionStyleIndex = selectionStyleIndex_;
     loadedSettings.menuScaleX = menuScaleX_;
@@ -419,9 +411,14 @@ bool App::init(int width, int height, const char* title) {
     // A font_file naming a file that's gone missing (or empty/first run)
     // silently falls back to Default above -- not an error.
 
-    const int textOutlineCount = static_cast<int>(kTextOutlineNames.size());
-    textOutlineIndex_ =
-        ((loadedSettings.textOutlineIndex % textOutlineCount) + textOutlineCount) % textOutlineCount;
+    outlineEnabled_ = loadedSettings.outlineEnabled;
+    outlineR_ = std::clamp(loadedSettings.outlineR, 0, 255);
+    outlineG_ = std::clamp(loadedSettings.outlineG, 0, 255);
+    outlineB_ = std::clamp(loadedSettings.outlineB, 0, 255);
+    outlineStrength_ = std::clamp(loadedSettings.outlineStrength, 1, 6);
+    fontR_ = std::clamp(loadedSettings.fontR, 0, 255);
+    fontG_ = std::clamp(loadedSettings.fontG, 0, 255);
+    fontB_ = std::clamp(loadedSettings.fontB, 0, 255);
 
     menuPositionIndex_ = loadedSettings.menuPositionIndex % static_cast<int>(kMenuPositionNames.size());
     if (menuPositionIndex_ < 0) {
@@ -485,6 +482,7 @@ bool App::init(int width, int height, const char* title) {
     loadSelectedFontIntoAtlas();
 
     ui::applyPvmStyle();
+    applyTextColor();
 
     ImGui_ImplGlfw_InitForOpenGL(window_, /*install_callbacks=*/true);
     ImGui_ImplOpenGL3_Init("#version 330 core");
@@ -613,7 +611,14 @@ void App::saveCurrentSettings() const {
     AppSettings settings;
     settings.fontSizePx = fontSizePx_;
     settings.fontFile = selectedFontFile_;
-    settings.textOutlineIndex = textOutlineIndex_;
+    settings.outlineEnabled = outlineEnabled_;
+    settings.outlineR = outlineR_;
+    settings.outlineG = outlineG_;
+    settings.outlineB = outlineB_;
+    settings.outlineStrength = outlineStrength_;
+    settings.fontR = fontR_;
+    settings.fontG = fontG_;
+    settings.fontB = fontB_;
     settings.menuPositionIndex = menuPositionIndex_;
     settings.selectionStyleIndex = selectionStyleIndex_;
     settings.menuScaleX = menuScaleX_;
@@ -1030,27 +1035,32 @@ void App::renderOsdMenu() {
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
-// Draws `text` at the current cursor position with an outline (8 copies
-// offset by 1px in outlineColorFor(textOutlineIndex_), drawn first) if
-// textOutlineIndex_ != 0, then the real text on top in `mainColor` --
-// ImGui's font atlas has no native glyph outline/stroke, so this is the
-// standard cheap multi-draw trick for one. The offset copies use
-// SetCursorScreenPos() to land exactly on top of each other rather than
-// stacking as separate lines; only the final (main-color) draw is left to
-// advance the layout cursor normally, so callers can treat this exactly
-// like a plain TextUnformatted() otherwise.
+// Draws `text` at the current cursor position with an outline (copies
+// offset in a (2*outlineStrength_+1)^2-1 square around the origin, in
+// outline{R,G,B}_, drawn first) if outlineEnabled_, then the real text on
+// top in `mainColor` -- ImGui's font atlas has no native glyph
+// outline/stroke, so this is the standard cheap multi-draw trick for one.
+// The offset copies use SetCursorScreenPos() to land exactly on top of
+// each other rather than stacking as separate lines; only the final
+// (main-color) draw is left to advance the layout cursor normally, so
+// callers can treat this exactly like a plain TextUnformatted() otherwise.
 void App::drawOutlinedTextColored(const std::string& text, const ImVec4& mainColor) {
     if (text.empty()) {
         return;
     }
-    if (textOutlineIndex_ != 0) {
-        static constexpr float kOffsets[8][2] = {{-1, -1}, {0, -1}, {1, -1}, {-1, 0},
-                                                  {1, 0},   {-1, 1}, {0, 1},  {1, 1}};
+    if (outlineEnabled_) {
+        const ImVec4 outlineColor(outlineR_ / 255.0f, outlineG_ / 255.0f, outlineB_ / 255.0f, 1.0f);
         const ImVec2 origin = ImGui::GetCursorScreenPos();
-        ImGui::PushStyleColor(ImGuiCol_Text, textOutlineColor(textOutlineIndex_));
-        for (const auto& offset : kOffsets) {
-            ImGui::SetCursorScreenPos(ImVec2(origin.x + offset[0], origin.y + offset[1]));
-            ImGui::TextUnformatted(text.c_str());
+        const int radius = std::clamp(outlineStrength_, 1, 6);
+        ImGui::PushStyleColor(ImGuiCol_Text, outlineColor);
+        for (int dy = -radius; dy <= radius; ++dy) {
+            for (int dx = -radius; dx <= radius; ++dx) {
+                if (dx == 0 && dy == 0) {
+                    continue;  // that's the main-color draw below
+                }
+                ImGui::SetCursorScreenPos(ImVec2(origin.x + static_cast<float>(dx), origin.y + static_cast<float>(dy)));
+                ImGui::TextUnformatted(text.c_str());
+            }
         }
         ImGui::PopStyleColor();
         ImGui::SetCursorScreenPos(origin);
@@ -1066,6 +1076,10 @@ void App::drawOutlinedText(const std::string& text) {
 
 void App::drawOutlinedTextDisabled(const std::string& text) {
     drawOutlinedTextColored(text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+}
+
+void App::applyTextColor() {
+    ImGui::GetStyle().Colors[ImGuiCol_Text] = ImVec4(fontR_ / 255.0f, fontG_ / 255.0f, fontB_ / 255.0f, 1.0f);
 }
 
 // Row-selection visual style, adjustable via the settings screen
@@ -1228,7 +1242,8 @@ void App::renderMenu() {
 
     if (screen_ == Screen::RootMenu) {
         drawScrollableRows(static_cast<int>(rootMenu_.items().size()), rootMenu_.selectedIndex(),
-                            [&](int i) { return rootMenu_.items()[i].label; }, anchor);
+                            [&](int i) { return rootMenu_.items()[i].label; }, anchor,
+                            computeListHeightBudget());
     } else if (fileBrowser_.empty()) {
         VertexScaleScope menuScope(menuScaleX_, menuScaleY_, anchor);
         VertexScaleScope textScope(textScaleX_, textScaleY_);
@@ -1237,7 +1252,8 @@ void App::renderMenu() {
         const auto& entries = fileBrowser_.entries();
         drawScrollableRows(
             static_cast<int>(entries.size()), fileBrowser_.selectedIndex(),
-            [&](int i) { return entries[i].isDirectory ? entries[i].name + "/" : entries[i].name; }, anchor);
+            [&](int i) { return entries[i].isDirectory ? entries[i].name + "/" : entries[i].name; }, anchor,
+            computeListHeightBudget());
     }
 
     {
@@ -1258,14 +1274,31 @@ void App::renderMenu() {
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
+// See the declaration in app.h. kMargin matches menuPivotAnchor()'s own
+// screen-edge margin, so the panel's positioning and its height budget
+// agree on how much breathing room to leave around it. The footer (an
+// explicit Spacing() + Separator() + one text line, drawn by the caller
+// right after drawScrollableRows() returns) isn't on screen yet when this
+// runs, so its height is estimated from style metrics rather than
+// measured -- close enough for a hint line, and it only affects how much
+// of the display the list claims, not correctness.
+float App::computeListHeightBudget() const {
+    constexpr float kMargin = 24.0f;
+    const float itemHeight = ImGui::GetTextLineHeightWithSpacing();
+    const float footerReserve = 2.0f * ImGui::GetStyle().ItemSpacing.y + 1.0f + itemHeight;
+    const float windowPadY = ImGui::GetStyle().WindowPadding.y;
+    const float contentBudget = ImGui::GetIO().DisplaySize.y - 2.0f * kMargin - 2.0f * windowPadY;
+    return std::max(itemHeight, contentBudget - ImGui::GetCursorPosY() - footerReserve);
+}
+
 // Long listings (a big directory, a home folder with dozens of dotfiles, or
 // the settings screen's dozen-odd rows) get a fixed-height scrolling
-// region instead of growing the window past the screen; the selected row
-// is kept in view as it moves. Shared by renderMenu() and renderSettings().
+// region -- capped at `maxListHeight` (see computeListHeightBudget()) --
+// instead of growing the window past the screen; the selected row is kept
+// in view as it moves. Shared by renderMenu() and renderSettings().
 void App::drawScrollableRows(int count, int selectedIndex, const std::function<std::string(int)>& labelFor,
-                              ImVec2 anchor) {
+                              ImVec2 anchor, float maxListHeight) {
     const float itemHeight = ImGui::GetTextLineHeightWithSpacing();
-    const float maxListHeight = ImGui::GetIO().DisplaySize.y * 0.5f;
     const float listHeight = std::min(static_cast<float>(count) * itemHeight, maxListHeight);
     ImGui::BeginChild("MenuList", ImVec2(0.0f, listHeight));
     {
@@ -1322,7 +1355,8 @@ void App::renderSettings() {
     const std::vector<SettingsRowDesc> rows = buildSettingsRows();
     drawScrollableRows(
         static_cast<int>(rows.size()), settingsSelectedRow_,
-        [&](int i) { return formatSettingsRow(rows[static_cast<size_t>(i)]); }, anchor);
+        [&](int i) { return formatSettingsRow(rows[static_cast<size_t>(i)]); }, anchor,
+        computeListHeightBudget());
 
     {
         VertexScaleScope menuScope(menuScaleX_, menuScaleY_, anchor);
@@ -1412,12 +1446,26 @@ std::vector<App::SettingsRowDesc> App::buildSettingsRows() {
     };
     rows.push_back(fontRow);
 
-    SettingsRowDesc textOutlineRow;
-    textOutlineRow.type = SettingsRowType::Enum;
-    textOutlineRow.label = "Text Outline";
-    textOutlineRow.enumPtr = &textOutlineIndex_;
-    textOutlineRow.enumNames = &kTextOutlineNames;
-    rows.push_back(textOutlineRow);
+    rows.push_back(boolRow("Outline", &outlineEnabled_, "ON", "OFF"));
+    rows.push_back(intRow("Outline R", &outlineR_, 0, 255, 5));
+    rows.push_back(intRow("Outline G", &outlineG_, 0, 255, 5));
+    rows.push_back(intRow("Outline B", &outlineB_, 0, 255, 5));
+    rows.push_back(intRow("Outline Strength", &outlineStrength_, 1, 6, 1, " px"));
+
+    // Font R/G/B each need to re-push the resulting color into ImGui's
+    // global style the moment any component changes, via applyTextColor()
+    // -- this shared lambda avoids repeating that callback three times.
+    auto fontColorRow = [this, &intRow](std::string label, int* ptr) {
+        SettingsRowDesc r = intRow(std::move(label), ptr, 0, 255, 5);
+        r.onIntChanged = [this, ptr](int v) {
+            *ptr = std::clamp(v, 0, 255);
+            applyTextColor();
+        };
+        return r;
+    };
+    rows.push_back(fontColorRow("Font R", &fontR_));
+    rows.push_back(fontColorRow("Font G", &fontG_));
+    rows.push_back(fontColorRow("Font B", &fontB_));
 
     SettingsRowDesc positionRow;
     positionRow.type = SettingsRowType::Enum;
