@@ -13,13 +13,20 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <ctime>
 #include <sstream>
 #include <vector>
 
 #include "paths.h"
 #include "settings.h"
 #include "shader.h"
+#include "teletext/news_config.h"
+#include "teletext/teletext_view.h"
 #include "ui/style.h"
+
+#ifdef __APPLE__
+#include "macos_media_keys.h"
+#endif
 
 namespace fs = std::filesystem;
 
@@ -29,6 +36,15 @@ namespace {
 // itself after that many rendered frames. Used to verify a clean, automatic
 // shutdown path (no crash/leak) without requiring a human to press a key or
 // close the window, e.g. in headless/CI verification.
+// Optional test hook: if PVM_TEST_FRAME_STATS is set, the main loop measures
+// every frame's wall-clock duration and, at shutdown, prints the average/
+// worst/99th-percentile frame time plus how many times the NEWS page
+// snapshot was swapped underneath the render loop -- evidence for "background
+// refresh causes no visible stutter".
+bool frameStatsRequested() {
+    return std::getenv("PVM_TEST_FRAME_STATS") != nullptr;
+}
+
 int autoCloseFrameCount() {
     if (const char* env = std::getenv("PVM_TEST_AUTOCLOSE_FRAMES")) {
         return std::atoi(env);
@@ -76,11 +92,21 @@ std::vector<int> parseSimulatedKeys() {
         else if (tok == "ENTER") keys.push_back(GLFW_KEY_ENTER);
         else if (tok == "ESCAPE") keys.push_back(GLFW_KEY_ESCAPE);
         else if (tok == "SPACE") keys.push_back(GLFW_KEY_SPACE);
+        else if (tok == "F") keys.push_back(GLFW_KEY_F);
         else if (tok == "BACKSPACE") keys.push_back(GLFW_KEY_BACKSPACE);
         else if (tok == "C") keys.push_back(GLFW_KEY_C);
         else if (tok == "M") keys.push_back(GLFW_KEY_M);
+        else if (tok == "I") keys.push_back(GLFW_KEY_I);
         else if (tok == "V") keys.push_back(GLFW_KEY_V);
         else if (tok == "B") keys.push_back(GLFW_KEY_B);
+        else if (tok == "R") keys.push_back(GLFW_KEY_R);
+        else if (tok == "G") keys.push_back(GLFW_KEY_G);
+        else if (tok == "Y") keys.push_back(GLFW_KEY_Y);
+        else if (tok == "F1") keys.push_back(GLFW_KEY_F1);
+        else if (tok == "F2") keys.push_back(GLFW_KEY_F2);
+        else if (tok == "F3") keys.push_back(GLFW_KEY_F3);
+        else if (tok == "F4") keys.push_back(GLFW_KEY_F4);
+        else if (tok.size() == 1 && tok[0] >= '0' && tok[0] <= '9') keys.push_back(GLFW_KEY_0 + (tok[0] - '0'));
     }
     return keys;
 }
@@ -488,7 +514,16 @@ bool App::init(int width, int height, const char* title) {
     ImGui_ImplOpenGL3_Init("#version 330 core");
     imguiInitialized_ = true;
 
-    rootMenu_.setItems({{"PLAY MEDIA"}, {"SETTINGS"}, {"EXIT"}});
+    rootMenu_.setItems({{"PLAY MEDIA"}, {"NEWS"}, {"TAGESSCHAU"}, {"SETTINGS"}, {"EXIT"}});
+    initTeletextSection(newsSection_, dir, "news", "PVM_NEWS_CONFIG");
+    initTeletextSection(tagesschauSection_, dir, "tagesschau", "PVM_TAGESSCHAU_CONFIG");
+
+#ifdef __APPLE__
+    // Lets the hardware Play/Pause media key toggle playback in addition
+    // to Space, regardless of which screen is showing -- mpv_.togglePause()
+    // already no-ops sensibly when nothing is loaded.
+    macos_media_keys::install([this]() { mpv_.togglePause(); });
+#endif
 
     return true;
 }
@@ -659,7 +694,30 @@ void App::run() {
     const std::vector<int> simulatedKeys = parseSimulatedKeys();
     int frame = 0;
 
+    const bool frameStats = frameStatsRequested();
+    std::vector<double> frameMs;
+    double lastFrameTime = glfwGetTime();
+    const teletext::PageStore* lastSnapshot = nullptr;
+    int snapshotSwaps = 0;
+
     while (!glfwWindowShouldClose(window_)) {
+        if (frameStats) {
+            const double now = glfwGetTime();
+            if (frame > 5) {  // skip window/GL warm-up
+                frameMs.push_back((now - lastFrameTime) * 1000.0);
+                if (frameMs.back() > 100.0) {
+                    std::fprintf(stdout, "[stats] slow frame %d: %.0f ms (screen=%d)\n", frame, frameMs.back(),
+                                 static_cast<int>(screen_));
+                }
+            }
+            lastFrameTime = now;
+            const std::shared_ptr<const teletext::PageStore> current = newsSection_.service->snapshot();
+            if (lastSnapshot && current.get() != lastSnapshot) {
+                ++snapshotSwaps;
+                std::fprintf(stdout, "[stats] news snapshot swapped (frame %d, %zu pages)\n", frame, current->size());
+            }
+            lastSnapshot = current.get();
+        }
         glfwPollEvents();
         mpv_.pollEvents();
 
@@ -713,7 +771,7 @@ void App::run() {
             if (idx < simulatedKeys.size()) {
                 std::fprintf(stdout, "[test] simulate key #%zu = %d (screen=%d)\n", idx,
                              simulatedKeys[idx], static_cast<int>(screen_));
-                handleKey(simulatedKeys[idx], GLFW_PRESS);
+                handleKey(simulatedKeys[idx], 0, GLFW_PRESS);
             }
         }
 
@@ -726,6 +784,18 @@ void App::run() {
             }
             glfwSetWindowShouldClose(window_, GLFW_TRUE);
         }
+    }
+
+    if (frameStats && !frameMs.empty()) {
+        std::vector<double> sorted = frameMs;
+        std::sort(sorted.begin(), sorted.end());
+        double sum = 0.0;
+        for (double ms : frameMs) sum += ms;
+        std::fprintf(stdout,
+                     "[stats] %zu frames: avg %.2f ms, p99 %.2f ms, worst %.2f ms, %d news snapshot swaps\n",
+                     frameMs.size(), sum / static_cast<double>(frameMs.size()),
+                     sorted[static_cast<size_t>(static_cast<double>(sorted.size() - 1) * 0.99)], sorted.back(),
+                     snapshotSwaps);
     }
 }
 
@@ -895,6 +965,9 @@ void App::renderHud() {
         case Screen::Settings:
             renderSettings();
             break;
+        case Screen::News:
+            renderTeletext();
+            break;
         case Screen::RootMenu:
         case Screen::FileBrowser:
         case Screen::PickStartDirectory:
@@ -904,32 +977,38 @@ void App::renderHud() {
 }
 
 void App::renderPlaybackHud() {
-    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-                                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-                                    ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove;
+    if (mediaInfoVisible_) {
+        const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                                        ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove;
 
-    ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f));
-    ImGui::SetNextWindowBgAlpha(0.35f);
-    ImGui::Begin("HUD", nullptr, flags);
+        ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f));
+        ImGui::SetNextWindowBgAlpha(0.35f);
+        ImGui::Begin("HUD", nullptr, flags);
 
-    {
-        // No "menu scale" here -- the playback HUD isn't a menu screen --
-        // but text scale still applies everywhere text is drawn.
-        VertexScaleScope textScope(textScaleX_, textScaleY_);
-        drawOutlinedText(mpv_.filename().empty() ? "(no media loaded)" : basename(mpv_.filename()));
+        {
+            // No "menu scale" here -- the playback HUD isn't a menu screen --
+            // but text scale still applies everywhere text is drawn.
+            VertexScaleScope textScope(textScaleX_, textScaleY_);
+            drawOutlinedText(mpv_.filename().empty() ? "(no media loaded)" : basename(mpv_.filename()));
 
-        char timeLine[64];
-        std::snprintf(timeLine, sizeof(timeLine), "%s / %s", formatTimestamp(mpv_.timePositionSeconds()).c_str(),
-                      formatTimestamp(mpv_.durationSeconds()).c_str());
-        drawOutlinedText(timeLine);
-        drawOutlinedText(mpv_.isPaused() ? "PAUSED" : "PLAYING");
+            char timeLine[64];
+            std::snprintf(timeLine, sizeof(timeLine), "%s / %s", formatTimestamp(mpv_.timePositionSeconds()).c_str(),
+                          formatTimestamp(mpv_.durationSeconds()).c_str());
+            drawOutlinedText(timeLine);
+            drawOutlinedText(mpv_.isPaused() ? "PAUSED" : "PLAYING");
+        }
+
+        ImGui::End();
     }
-
-    ImGui::End();
 
     if (currentMediaKind_ == MediaKind::Audio) {
         renderAudioIndicator();
         renderAudioProgressBar();
+    }
+
+    if (glfwGetTime() < volumeIndicatorHideAtTime_) {
+        renderVolumeIndicator();
     }
 
     if (osdMenuVisible_) {
@@ -1000,6 +1079,54 @@ void App::renderAudioProgressBar() {
         const ImVec2 innerMax(innerMin.x + (innerMaxFull.x - innerMin.x) * fraction, innerMaxFull.y);
         drawList->AddRectFilled(innerMin, innerMax, IM_COL32(255, 255, 255, 255));
     }
+}
+
+// "VOL" plus a 25-bar level meter (each bar = 4% of volume_), shown for a
+// couple seconds after a volume change then auto-hidden -- see
+// volumeIndicatorHideAtTime_. Lit bars (volume_ so far) are drawn taller
+// than the unlit remainder, filling left to right, all bottom-aligned to
+// the "VOL" text's baseline.
+void App::renderVolumeIndicator() {
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                                    ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBackground;
+
+    ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y - 70.0f), ImGuiCond_Always, ImVec2(0.5f, 1.0f));
+    ImGui::Begin("VolumeIndicator", nullptr, flags);
+
+    {
+        VertexScaleScope textScope(textScaleX_, textScaleY_);
+        drawOutlinedText("VOL");
+    }
+    ImGui::SameLine();
+
+    constexpr int kBarCount = 25;      // each bar = 4% of volume (25 * 4 = 100)
+    constexpr float kBarWidth = 8.0f;
+    constexpr float kBarGap = 3.0f;
+    constexpr float kBarHeightInactive = 10.0f;
+    constexpr float kBarHeightActive = 16.0f;
+
+    const int activeBars = std::clamp((volume_ + 2) / 4, 0, kBarCount);  // +2: round to nearest bar
+    const float textHeight = ImGui::GetTextLineHeight();
+    const float baselineY = ImGui::GetCursorScreenPos().y + textHeight;
+    const float originX = ImGui::GetCursorScreenPos().x;
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    for (int i = 0; i < kBarCount; ++i) {
+        const bool active = i < activeBars;
+        const float barHeight = active ? kBarHeightActive : kBarHeightInactive;
+        const float x0 = originX + static_cast<float>(i) * (kBarWidth + kBarGap);
+        const float x1 = x0 + kBarWidth;
+        const float y1 = baselineY;
+        const float y0 = y1 - barHeight;
+        const ImU32 color = active ? IM_COL32(255, 255, 255, 255) : IM_COL32(255, 255, 255, 70);
+        drawList->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), color);
+    }
+    ImGui::Dummy(ImVec2(static_cast<float>(kBarCount) * (kBarWidth + kBarGap) - kBarGap, textHeight));
+
+    ImGui::End();
 }
 
 // A quick-access OSD opened with 'M' during playback, for adjusting a
@@ -1591,6 +1718,7 @@ std::vector<App::SettingsRowDesc> App::buildOsdRows() {
     volumeRow.onIntChanged = [this](int v) {
         volume_ = std::clamp(v, 0, 100);
         mpv_.setVolume(volume_);
+        volumeIndicatorHideAtTime_ = glfwGetTime() + 2.0;
     };
     rows.push_back(volumeRow);
 
@@ -1687,11 +1815,15 @@ void App::activateRootMenuItem(int index) {
         case 0:  // Play Media
             enterFileBrowser(mergedExtensions());
             break;
-        case 1:  // Settings
+        case 1:  // News
+        case 2:  // Tagesschau
+            openTeletext(index);
+            break;
+        case 3:  // Settings
             settingsSelectedRow_ = 0;
             screen_ = Screen::Settings;
             break;
-        case 2:  // Exit
+        case 4:  // Exit
             glfwSetWindowShouldClose(window_, GLFW_TRUE);
             break;
         default:
@@ -1718,7 +1850,7 @@ void App::enterFileBrowser(std::vector<std::string> extensions) {
     screen_ = Screen::FileBrowser;
 }
 
-void App::handleKey(int key, int action) {
+void App::handleKey(int key, int scancode, int action) {
     if (action != GLFW_PRESS && action != GLFW_REPEAT) {
         return;
     }
@@ -1867,8 +1999,12 @@ void App::handleKey(int key, int action) {
             }
             break;
 
+        case Screen::News:
+            handleTeletextKey(key, action);
+            break;
+
         case Screen::Playing:
-            if (key == GLFW_KEY_M && action == GLFW_PRESS) {
+            if (key == GLFW_KEY_M || key == GLFW_KEY_I && action == GLFW_PRESS) {
                 osdMenuVisible_ = !osdMenuVisible_;
                 osdSelectedRow_ = 0;
                 break;
@@ -1926,6 +2062,28 @@ void App::handleKey(int key, int action) {
                         mpv_.togglePause();
                     }
                     break;
+#ifdef _WIN32
+                case GLFW_KEY_UNKNOWN:
+                    // The hardware Play/Pause media key: Windows delivers
+                    // it as a normal WM_KEYDOWN with no virtual-key GLFW
+                    // recognizes, so it surfaces here as GLFW_KEY_UNKNOWN
+                    // -- the key itself is identified by `scancode`, which
+                    // GLFW always derives from the raw PS/2 Scan Code Set
+                    // 1 (HIWORD(lParam) & (KF_EXTENDED | 0xff) in GLFW's
+                    // own win32_window.c), *not* the Win32 virtual-key
+                    // code (VK_MEDIA_PLAY_PAUSE = 0xB3 never appears here).
+                    // 0x122 is that key's well-documented Set-1 code (0x22
+                    // with GLFW's extended-key bit, 0x100, folded in).
+                    if (action == GLFW_PRESS && scancode == 0x122) {
+                        mpv_.togglePause();
+                    }
+                    break;
+#endif
+                case GLFW_KEY_F:
+                    if (action == GLFW_PRESS) {
+                        mpv_.togglePause();
+                    }
+                    break;
                 case GLFW_KEY_LEFT:
                     mpv_.seekRelative(-5.0);
                     break;
@@ -1951,6 +2109,23 @@ void App::handleKey(int key, int action) {
                         saveCurrentSettings();
                     }
                     break;
+                case GLFW_KEY_R:
+                    if (action == GLFW_PRESS) {
+                        mediaInfoVisible_ = !mediaInfoVisible_;
+                    }
+                    break;
+                case GLFW_KEY_COMMA:
+                    volume_ = std::clamp(volume_ - 5, 0, 100);
+                    mpv_.setVolume(volume_);
+                    volumeIndicatorHideAtTime_ = glfwGetTime() + 2.0;
+                    saveCurrentSettings();
+                    break;
+                case GLFW_KEY_PERIOD:
+                    volume_ = std::clamp(volume_ + 5, 0, 100);
+                    mpv_.setVolume(volume_);
+                    volumeIndicatorHideAtTime_ = glfwGetTime() + 2.0;
+                    saveCurrentSettings();
+                    break;
                 case GLFW_KEY_ESCAPE:
                     if (action == GLFW_PRESS) {
                         mpv_.stop();
@@ -1962,6 +2137,131 @@ void App::handleKey(int key, int action) {
             }
             break;
     }
+}
+
+// Up/Down = next/previous page number, Left/Right = previous/next article,
+// the colored keys of the bottom bar (F1-F4, or R/G/Y/B): red "-" previous page,
+// green "+" next page, yellow "News" (or M) the index page 100, blue "Weather" weather_page,
+// digits (main row or keypad -- the Xbox 360 remote sends the latter) = direct
+// page entry; ESC/Backspace = back: abandon a half-typed number, else article ->
+// headlines -> index -> leave NEWS.
+void App::handleTeletextKey(int key, int action) {
+    teletext::Navigator& nav = activeTeletext_->nav;
+    const teletext::NewsService& service = *activeTeletext_->service;
+    const std::shared_ptr<const teletext::PageStore> snapshot = service.snapshot();
+    const teletext::PageStore& store = *snapshot;
+
+    if (key >= GLFW_KEY_0 && key <= GLFW_KEY_9) {
+        if (action == GLFW_PRESS) {
+            nav.digit(key - GLFW_KEY_0, glfwGetTime());
+        }
+        return;
+    }
+    if (key >= GLFW_KEY_KP_0 && key <= GLFW_KEY_KP_9) {
+        if (action == GLFW_PRESS) {
+            nav.digit(key - GLFW_KEY_KP_0, glfwGetTime());
+        }
+        return;
+    }
+
+    switch (key) {
+        case GLFW_KEY_UP:
+        case GLFW_KEY_F2:  // green "+"
+        case GLFW_KEY_G:
+            nav.up(store);
+            break;
+        case GLFW_KEY_DOWN:
+        case GLFW_KEY_F1:  // red "-"
+        case GLFW_KEY_R:
+            nav.down(store);
+            break;
+        case GLFW_KEY_F3:  // yellow "News"
+        case GLFW_KEY_Y:
+        case GLFW_KEY_M:   // "menu": back to page 100 from anywhere
+            if (action == GLFW_PRESS) nav.goTo(teletext::kIndexPage);
+            break;
+        case GLFW_KEY_F4:  // blue "Weather"
+        case GLFW_KEY_B:
+            if (action == GLFW_PRESS && service.config().weatherPage > 0) {
+                nav.goTo(service.config().weatherPage);
+            }
+            break;
+        case GLFW_KEY_LEFT:
+            nav.left(store);
+            break;
+        case GLFW_KEY_RIGHT:
+            nav.right(store);
+            break;
+        case GLFW_KEY_ESCAPE:
+        case GLFW_KEY_BACKSPACE:
+            if (action == GLFW_PRESS && !nav.back(store)) {
+                screen_ = Screen::RootMenu;
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+// Loads the section's config (<baseName>.cfg next to the executable, else the
+// shipped <baseName>.default.cfg; the environment variable `envVar` overrides
+// both) and starts its service. With no usable config the section still works:
+// page 100 says no sources are configured.
+void App::initTeletextSection(TeletextSection& section, const std::string& exeDirectory, const std::string& baseName,
+                              const char* envVar) {
+    teletext::NewsConfig config;
+    std::vector<std::string> warnings;
+
+    std::string path;
+    if (const char* env = std::getenv(envVar)) {
+        path = env;
+    } else if (fs::exists(exeDirectory + "/" + baseName + ".cfg")) {
+        path = exeDirectory + "/" + baseName + ".cfg";
+    } else {
+        path = exeDirectory + "/" + baseName + ".default.cfg";
+    }
+    if (!teletext::loadNewsConfig(path, config, &warnings)) {
+        std::fprintf(stderr, "[%s] no config at %s -- this section will have no sources\n", baseName.c_str(),
+                     path.c_str());
+    }
+    for (const std::string& w : warnings) {
+        std::fprintf(stderr, "[%s] %s\n", baseName.c_str(), w.c_str());
+    }
+
+    // Cached pages are loaded (and published) right here in the constructor;
+    // the live refresh then runs on the service's own thread.
+    section.service = std::make_unique<teletext::NewsService>(std::move(config), exeDirectory + "/cache/" + baseName);
+    if (const char* env = std::getenv("PVM_TEST_NEWS_REFRESH_SECONDS")) {
+        section.service->setRefreshIntervalSecondsForTesting(std::atoi(env));
+    }
+    section.service->start();
+}
+
+void App::openTeletext(int rootMenuIndex) {
+    activeTeletext_ = rootMenuIndex == 2 ? &tagesschauSection_ : &newsSection_;
+    activeTeletext_->nav.goTo(teletext::kIndexPage);
+    screen_ = Screen::News;
+}
+
+void App::renderTeletext() {
+    teletext::Navigator& nav = activeTeletext_->nav;
+    const teletext::NewsService& service = *activeTeletext_->service;
+    nav.update(glfwGetTime());
+
+    const std::shared_ptr<const teletext::PageStore> snapshot = service.snapshot();
+    teletext::TeletextPage placeholder;
+    const teletext::TeletextPage* page = snapshot->find(nav.currentPage());
+    if (!page) {
+        placeholder = teletext::makeNotFoundPage(nav.currentPage(), service.config().serviceName);
+        page = &placeholder;
+    }
+
+    const std::time_t now = std::time(nullptr);
+    teletext::drawPage(*page, nav.targetLabel(), teletext::formatLocalTime(now, "%d.%m."),
+                       teletext::formatLocalTime(now, "%H:%M:%S"));
+
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
 void App::onPlaybackStopped() {
@@ -1982,14 +2282,20 @@ void App::onPlaybackStopped() {
     }
 }
 
-void App::keyCallback(GLFWwindow* window, int key, int /*scancode*/, int action, int /*mods*/) {
+void App::keyCallback(GLFWwindow* window, int key, int scancode, int action, int /*mods*/) {
     auto* app = static_cast<App*>(glfwGetWindowUserPointer(window));
     if (app) {
-        app->handleKey(key, action);
+        app->handleKey(key, scancode, action);
     }
 }
 
 void App::shutdown() {
+    // Joins the refresh threads (aborting any transfer in flight).
+    newsSection_.service.reset();
+    tagesschauSection_.service.reset();
+#ifdef __APPLE__
+    macos_media_keys::shutdown();
+#endif
     if (imguiInitialized_) {
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplGlfw_Shutdown();

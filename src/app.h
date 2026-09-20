@@ -1,10 +1,14 @@
 #pragma once
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "mpv_player.h"
+#include "teletext/navigator.h"
+#include "teletext/news_service.h"
+#include "teletext/page.h"
 #include "ui/file_browser.h"
 #include "ui/menu.h"
 
@@ -37,7 +41,7 @@ public:
     void shutdown();
 
 private:
-    enum class Screen { RootMenu, FileBrowser, Settings, PickStartDirectory, Playing };
+    enum class Screen { RootMenu, FileBrowser, Settings, PickStartDirectory, Playing, News };
     enum class MediaKind { Unknown, Video, Audio };
 
     // A single adjustable settings-screen row, described generically so the
@@ -94,8 +98,10 @@ private:
     void renderPlaybackHud();
     void renderAudioIndicator();
     void renderAudioProgressBar();
+    void renderVolumeIndicator();
     void renderOsdMenu();
     void renderMenu();
+    void renderTeletext();
     void renderSettings();
     void drawMenuRow(const std::string& label, bool selected);
     // Text with an optional outline (outlineEnabled_): drawn as offset
@@ -178,7 +184,9 @@ private:
     void applyFont();  // rebuilds the ImGui font atlas from fontSizePx_ + selectedFontFile_
     void saveCurrentSettings() const;
 
-    void handleKey(int key, int action);
+    void handleKey(int key, int scancode, int action);
+    void handleTeletextKey(int key, int action);
+    void openTeletext(int rootMenuIndex);
     void activateRootMenuItem(int index);
     void enterFileBrowser(std::vector<std::string> extensions);
     // Common bookkeeping for leaving Screen::Playing back to the root menu
@@ -310,6 +318,17 @@ private:
     int osdSelectedRow_ = 0;
     int volume_ = 100;
 
+    // Filename/time/play-state block in renderPlaybackHud(), toggled with
+    // '0'. Not persisted -- like osdMenuVisible_, it's a transient
+    // during-playback display state, not a saved preference.
+    bool mediaInfoVisible_ = true;
+
+    // "VOL" + bar-graph indicator (renderVolumeIndicator()), shown for 2
+    // seconds after any volume change (OSD VOLUME row or the ';'/':'
+    // hotkeys) then auto-hidden. glfwGetTime()-based rather than a frame
+    // counter so the 2 seconds is wall-clock, independent of frame rate.
+    double volumeIndicatorHideAtTime_ = 0.0;
+
     // Video scaling, both cycled with a key during playback ('V'/'B') and
     // persisted:
     //   videoScaleModeIndex_ -- indexes kVideoScaleModeNames:
@@ -330,6 +349,24 @@ private:
     int aspectOverrideIndex_ = 0;
 
     MediaKind currentMediaKind_ = MediaKind::Unknown;
+
+    // Teletext-style page readers: the root menu's NEWS and TAGESSCHAU
+    // entries. Each section owns its feeds (a NewsService that publishes
+    // immutable page snapshots, see teletext/page.h) and its own current
+    // page + digit-entry state; activeTeletext_ is the one on screen while
+    // screen_ == Screen::News.
+    struct TeletextSection {
+        std::unique_ptr<teletext::NewsService> service;
+        teletext::Navigator nav;
+    };
+    // Loads <baseName>.cfg from exeDirectory (else <baseName>.default.cfg,
+    // else `envVar`'s path if that environment variable is set) and starts
+    // the section's background refresh; cached pages are available at once.
+    void initTeletextSection(TeletextSection& section, const std::string& exeDirectory, const std::string& baseName,
+                             const char* envVar);
+    TeletextSection newsSection_;
+    TeletextSection tagesschauSection_;
+    TeletextSection* activeTeletext_ = &newsSection_;
 
     Screen screen_ = Screen::RootMenu;
     Menu rootMenu_;
