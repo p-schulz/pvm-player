@@ -63,3 +63,105 @@ for everyday use.
 
 Explicitly out of scope for this prototype: subtitles, network streaming,
 playlist persistence, metadata/artwork scraping, and audio visualizations.
+
+
+## NEWS (teletext)
+
+The root menu's **NEWS** entry opens a teletext-style reader: a 40x24
+character grid (the World System Teletext geometry) in the eight teletext
+colors, using whichever font is selected in Settings (the teletext-style
+fonts under `assets/fonts/` suit it best).
+
+**Pages.** 100 is the index. Each configured source owns a block of pages:
+its first page is a headline list, the following pages hold articles
+(newest first, long ones continue across pages, capped at
+`max_article_pages`). When a block is full the oldest articles are dropped.
+
+| Key(s)                | Action                                                        |
+|------------------------|----------------------------------------------------------------|
+| ↑ / ↓                  | Next / previous page number (skipping unpopulated numbers)    |
+| ← / →                  | Previous / next *article* (skips continuation pages)          |
+| 0-9 (or keypad 0-9)    | Type a page number; jumps on the 3rd digit                    |
+| Red / Green (F1 / F2, or R / G) | `-` previous page / `+` next page, like the bottom bar |
+| Yellow (F3 or Y), M    | `News`: the index, page 100                                   |
+| Blue (F4 or B)         | `Weather`: the page set by `weather_page` in `news.cfg`       |
+| Esc / Backspace        | Back: cancels a half-typed number, else article → headlines → index → leave NEWS |
+
+A page number nobody has typed a third digit for is abandoned after 3 seconds.
+A number with no page behind it shows a "PAGE NOT FOUND" placeholder.
+
+**Sources** are listed in `news.cfg` next to the executable (the build ships
+a starter copy as `news.default.cfg`, from [`conf/news.cfg`](conf/news.cfg);
+copy it to `news.cfg` to edit it):
+
+```
+refresh_minutes=15
+block_size=10
+max_article_pages=3
+weather_page=150
+source=110 | WORLD | https://feeds.bbci.co.uk/news/world/rss.xml | bbc.co.uk | BBC NEWS
+```
+
+A source is `start page | CATEGORY | feed URL`, optionally followed by
+`| provider` (the cyan header text; defaults to the URL's host) and
+`| LOGO` (the title-art text, up to 13 letters/digits; defaults to the
+category). The blue `Weather` key jumps to `weather_page`; the shipped config
+points it at the wetter.com weather feed (German).
+
+**Refreshing and caching.** Feeds are fetched on a background thread (never
+on the render loop, so video playback is unaffected), one source at a time,
+no more often than every 5 minutes. The last good copy of every feed is
+kept in `cache/news/` next to the executable, so the section has pages
+immediately at startup and keeps working offline. The page-100 footer shows
+when the news was last updated, and flags sources that are failing.
+
+Feed quality varies a lot: some feeds carry only a one-line teaser per
+story, others (e.g. Ars Technica) the first several paragraphs. Check a
+candidate with the probe tool before adding it:
+
+```sh
+./build/teletext_probe https://example.com/feed.xml --limit 3
+./build/teletext_probe --news build/news.default.cfg 100 110   # dump pages as text
+```
+
+Only the feed URLs you configure are fetched (no page scraping, no
+images), with an identifying `User-Agent`. Logic tests run with
+`ctest --test-dir build`.
+
+### TAGESSCHAU
+
+This is to be just a wrapper/viewer for the tagesschau RSS feeds and is not shipped with this project, as any commercial use and other publication is not allowed.
+
+<p align="center">
+  <img src="docs/screenshot-tagesschau-overview.png" alt="TAGESSCHAU page 100: title art, top stories with page numbers, section list" width="380">
+  <img src="docs/screenshot-tagesschau-section.png" alt="TAGESSCHAU page 510: the Ausland section index" width="380">
+</p>
+<p align="center"><em>Page 100 (overview) and page 510 (the Ausland section index)</em></p>
+
+The root menu's **TAGESSCHAU** entry is a second, larger teletext service of
+the same kind, built from 14 tagesschau.de feeds (configured in
+[`conf/tagesschau.cfg`](conf/tagesschau.cfg), shipped as
+`tagesschau.default.cfg`; copy to `tagesschau.cfg` to edit). It has its own
+config, cache (`cache/tagesschau/`) and current page, and the same keys as NEWS.
+
+| Pages   | Content                                                          |
+|---------|-------------------------------------------------------------------|
+| 100-199 | Meldungen (110-149), Startseite (150-199)                         |
+| 200-399 | Inland (210), Innenpolitik (260), Gesellschaft (310), Regional (350) |
+| 400-499 | Baden-Württemberg (410)                                           |
+| 500-699 | Ausland (510)                                                     |
+| 700-799 | Wirtschaft (710)                                                  |
+| 800-999 | Wissen (810), Gesundheit (860), Klima & Umwelt (910), Forschung (940), Technologie (970) |
+
+Every **hundred page** (100, 200, ... 900) is an overview: title art, the six
+newest articles located in its 100-page range with their page numbers, and
+the sections that have pages there. Each feed's first page is its section
+index (logo banner plus headlines); article pages follow, newest first, and
+never use the hundred pages -- a range like 510-699 simply passes over 600
+(whose overview lists the same newest stories if the feed did not reach that
+far). Esc/Backspace climbs article → section index → hundred page → page 100
+→ leave. The blue key has no target in this section, so its label is blank.
+
+Both sections use the same file format: `source=` lines take a page range
+(`210-259`) instead of a start page, and `overview_pages=hundreds`,
+`service_name=` and `service_logo=` switch a config into this overview style.
