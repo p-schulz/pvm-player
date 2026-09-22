@@ -25,7 +25,7 @@ constexpr float kRowLeading = 1.3f;
 
 }  // namespace
 
-GridLayout computeGridLayout(ImFont* font, ImVec2 display) {
+GridLayout computeGridLayout(ImFont* font, ImVec2 display, const TeletextScale& scale) {
     ImFontBaked* baked = font->GetFontBaked(kReferenceSize);
     const float advanceRatio = baked->GetCharAdvance('M') / kReferenceSize;
     const float lineRatio = (baked->Ascent - baked->Descent) / kReferenceSize;
@@ -36,9 +36,20 @@ GridLayout computeGridLayout(ImFont* font, ImVec2 display) {
 
     GridLayout layout;
     layout.fontSize = std::max(1.0f, std::floor(std::min(sizeFromWidth, sizeFromHeight)));
-    layout.cellW = std::max(1, static_cast<int>(std::lround(advanceRatio * layout.fontSize)));
-    layout.cellH = std::max(1, static_cast<int>(std::lround(cellRatio * layout.fontSize)));
-    layout.textOffsetY = (layout.cellH - static_cast<int>(std::lround(lineRatio * layout.fontSize))) / 2;
+    layout.advanceRatio = advanceRatio;
+    layout.lineRatio = lineRatio;
+
+    const int baseCellW = std::max(1, static_cast<int>(std::lround(advanceRatio * layout.fontSize)));
+    const int baseCellH = std::max(1, static_cast<int>(std::lround(cellRatio * layout.fontSize)));
+
+    // Menu scale resizes the cells (kept whole numbers); glyphs follow the
+    // *rounded* cell so they always match it, then text scale stretches them
+    // on top.
+    layout.cellW = std::max(1, static_cast<int>(std::lround(static_cast<float>(baseCellW) * scale.menuX)));
+    layout.cellH = std::max(1, static_cast<int>(std::lround(static_cast<float>(baseCellH) * scale.menuY)));
+    layout.glyphScaleX = static_cast<float>(layout.cellW) / static_cast<float>(baseCellW) * scale.textX;
+    layout.glyphScaleY = static_cast<float>(layout.cellH) / static_cast<float>(baseCellH) * scale.textY;
+
     layout.originX = (static_cast<int>(display.x) - kCols * layout.cellW) / 2;
     layout.originY = (static_cast<int>(display.y) - kRows * layout.cellH) / 2;
     return layout;
@@ -64,7 +75,7 @@ ImU32 colorU32(Color c) {
 }  // namespace
 
 void drawPage(const TeletextPage& source, const std::string& targetLabel, const std::string& date,
-              const std::string& time) {
+              const std::string& time, const TeletextScale& scale, int selectedLink) {
     ImDrawList* draw = ImGui::GetBackgroundDrawList();
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     ImFont* font = ImGui::GetFont();
@@ -74,7 +85,15 @@ void drawPage(const TeletextPage& source, const std::string& targetLabel, const 
     TeletextPage page = source;
     composeHeader(page, targetLabel, date, time);
 
-    const GridLayout grid = computeGridLayout(font, display);
+    if (selectedLink >= 0 && selectedLink < static_cast<int>(page.links.size())) {
+        const RowLink& link = page.links[static_cast<size_t>(selectedLink)];
+        const auto r = static_cast<size_t>(link.row);
+        for (int col = std::max(link.col, 0); col < std::min(link.col + link.length, kCols); ++col) {
+            std::swap(page.fg[r][static_cast<size_t>(col)], page.bg[r][static_cast<size_t>(col)]);
+        }
+    }
+
+    const GridLayout grid = computeGridLayout(font, display, scale);
 
     for (int row = 0; row < kRows; ++row) {
         const auto r = static_cast<size_t>(row);
@@ -122,9 +141,35 @@ void drawPage(const TeletextPage& source, const std::string& targetLabel, const 
             }
 
             const char ch = page.lines[r][c];
-            if (ch != ' ') {
-                draw->AddText(font, grid.fontSize, ImVec2(x, y + static_cast<float>(grid.textOffsetY)), color, &ch,
-                              &ch + 1);
+            if (ch == ' ') {
+                continue;
+            }
+
+            // Rasterize at the larger of the two stretch factors (so a
+            // magnified glyph stays crisp), centered in the cell, then squash
+            // the other axis with a vertex transform about the cell centre --
+            // ImGui fonts have no independent X/Y scale. With no scaling this
+            // is exactly the plain whole-pixel placement.
+            const float gx = grid.glyphScaleX;
+            const float gy = grid.glyphScaleY;
+            const float size = std::max(1.0f, grid.fontSize * std::max(gx, gy));
+            const int boxW = static_cast<int>(std::lround(grid.advanceRatio * size));
+            const int boxH = static_cast<int>(std::lround(grid.lineRatio * size));
+            const ImVec2 pos(x + static_cast<float>((grid.cellW - boxW) / 2),
+                             y + static_cast<float>((grid.cellH - boxH) / 2));
+
+            const int firstVertex = draw->VtxBuffer.Size;
+            draw->AddText(font, size, pos, color, &ch, &ch + 1);
+
+            const float kx = gx / std::max(gx, gy);
+            const float ky = gy / std::max(gx, gy);
+            if (kx != 1.0f || ky != 1.0f) {
+                const ImVec2 anchor(x + static_cast<float>(grid.cellW) * 0.5f, y + static_cast<float>(grid.cellH) * 0.5f);
+                for (int i = firstVertex; i < draw->VtxBuffer.Size; ++i) {
+                    ImDrawVert& v = draw->VtxBuffer[i];
+                    v.pos.x = anchor.x + (v.pos.x - anchor.x) * kx;
+                    v.pos.y = anchor.y + (v.pos.y - anchor.y) * ky;
+                }
             }
         }
     }

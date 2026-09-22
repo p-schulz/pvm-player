@@ -6,8 +6,8 @@
 #include <vector>
 
 #include "mpv_player.h"
+#include "teletext/data_service.h"
 #include "teletext/navigator.h"
-#include "teletext/news_service.h"
 #include "teletext/page.h"
 #include "ui/file_browser.h"
 #include "ui/menu.h"
@@ -187,6 +187,10 @@ private:
     void handleKey(int key, int scancode, int action);
     void handleTeletextKey(int key, int action);
     void openTeletext(int rootMenuIndex);
+    // Enter on a teletext page: acts on activeTeletext_->nav's selected
+    // RowLink -- a page link jumps there, a play link loads it into the
+    // player (remembering to return to this same teletext page on stop).
+    void activateTeletextSelection();
     void activateRootMenuItem(int index);
     void enterFileBrowser(std::vector<std::string> extensions);
     // Common bookkeeping for leaving Screen::Playing back to the root menu
@@ -295,6 +299,16 @@ private:
     float textScaleX_ = 1.0f;
     float textScaleY_ = 1.0f;
 
+    // The same four knobs for the teletext screens (NEWS/TAGESSCHAU), which
+    // are laid out on their own auto-fitted grid and so ignore the menu
+    // ones above: menu scale resizes the whole grid about the screen
+    // centre, text scale stretches the glyphs within their cells. Settings
+    // rows "Teletext Menu/Text X/Y"; see teletext::TeletextScale.
+    float teletextMenuScaleX_ = 1.0f;
+    float teletextMenuScaleY_ = 1.0f;
+    float teletextTextScaleX_ = 1.0f;
+    float teletextTextScaleY_ = 1.0f;
+
     // Index into a fixed list of row-selection visual styles (reverse-video
     // highlight / marker rect / underline) -- adjustable via the settings
     // screen; see drawMenuRow().
@@ -350,23 +364,48 @@ private:
 
     MediaKind currentMediaKind_ = MediaKind::Unknown;
 
-    // Teletext-style page readers: the root menu's NEWS and TAGESSCHAU
-    // entries. Each section owns its feeds (a NewsService that publishes
-    // immutable page snapshots, see teletext/page.h) and its own current
-    // page + digit-entry state; activeTeletext_ is the one on screen while
+    // Teletext-style page readers: the root menu's NEWS, TAGESSCHAU, ARD and
+    // ZDF entries. Each section owns its data (a TeletextDataService --
+    // either a NewsService for RSS/Atom, or an MvwService for the
+    // MediathekViewWeb API -- that publishes immutable page snapshots, see
+    // teletext/page.h) and its own current page + link-selection +
+    // digit-entry state; activeTeletext_ is the one on screen while
     // screen_ == Screen::News.
     struct TeletextSection {
-        std::unique_ptr<teletext::NewsService> service;
+        std::unique_ptr<teletext::TeletextDataService> service;
         teletext::Navigator nav;
     };
     // Loads <baseName>.cfg from exeDirectory (else <baseName>.default.cfg,
     // else `envVar`'s path if that environment variable is set) and starts
-    // the section's background refresh; cached pages are available at once.
+    // the NEWS/TAGESSCHAU section's background refresh; cached pages are
+    // available at once.
     void initTeletextSection(TeletextSection& section, const std::string& exeDirectory, const std::string& baseName,
                              const char* envVar);
+    // Same idea for a MediathekViewWeb-backed section (ARD, ZDF, ...), which
+    // has its own config shape (a channel, favorites and the generated A-Z
+    // window) -- see teletext/mvw_config.h. `baseName` picks the config file
+    // (e.g. "ard" -> ard.cfg/ard.default.cfg) and the cache subdirectory;
+    // `envVar` is the config-path override environment variable.
+    void initMvwSection(TeletextSection& section, const std::string& exeDirectory, const std::string& baseName,
+                        const char* envVar);
     TeletextSection newsSection_;
     TeletextSection tagesschauSection_;
+    TeletextSection ardSection_;
+    TeletextSection zdfSection_;
     TeletextSection* activeTeletext_ = &newsSection_;
+
+    // Set right before switching to Screen::Playing from a teletext play
+    // link, so onPlaybackStopped() returns to that same teletext page (and
+    // selected row) instead of the root menu -- activeTeletext_/its nav are
+    // never touched by Playing, so "return" is just switching screen_ back.
+    bool cameFromTeletext_ = false;
+
+    // The playback HUD's title line: normally basename(mpv_.filename()), but
+    // a teletext play link's URL has no meaningful filename (an opaque CDN
+    // name, e.g. "409_16651_sendeton_....mp4"), so activateTeletextSelection()
+    // sets this to the RowLink's own playTitle instead. Cleared whenever
+    // Play Media starts a local file, so that keeps showing its real name.
+    std::string playbackTitleOverride_;
 
     Screen screen_ = Screen::RootMenu;
     Menu rootMenu_;

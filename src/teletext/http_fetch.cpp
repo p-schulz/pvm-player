@@ -35,9 +35,9 @@ int progressCallback(void* userdata, curl_off_t, curl_off_t, curl_off_t, curl_of
     return cancel && cancel->load() ? 1 : 0;  // nonzero aborts the transfer
 }
 
-}  // namespace
-
-FetchResult httpGet(const std::string& url, const FetchOptions& options) {
+// Shared setup for both httpGet() and httpPostJson(); `postBody` is null for
+// a GET, pointing at the JSON body otherwise.
+FetchResult httpRequest(const std::string& url, const FetchOptions& options, const std::string* postBody) {
     ensureCurlGlobalInit();
 
     FetchResult result;
@@ -49,6 +49,7 @@ FetchResult httpGet(const std::string& url, const FetchOptions& options) {
 
     WriteContext ctx{&result.body, options.maxBodyBytes};
     char errorBuffer[CURL_ERROR_SIZE] = {0};
+    curl_slist* headers = nullptr;
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_USERAGENT, options.userAgent.c_str());
@@ -73,10 +74,19 @@ FetchResult httpGet(const std::string& url, const FetchOptions& options) {
         curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progressCallback);
         curl_easy_setopt(curl, CURLOPT_XFERINFODATA, const_cast<std::atomic<bool>*>(options.cancel));
     }
+    if (postBody) {
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, postBody->data());
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(postBody->size()));
+    }
 
     const CURLcode code = curl_easy_perform(curl);
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &result.status);
     curl_easy_cleanup(curl);
+    if (headers) {
+        curl_slist_free_all(headers);
+    }
 
     if (ctx.overflowed) {
         result.error = "response larger than the configured size limit";
@@ -93,6 +103,16 @@ FetchResult httpGet(const std::string& url, const FetchOptions& options) {
         result.body.clear();
     }
     return result;
+}
+
+}  // namespace
+
+FetchResult httpGet(const std::string& url, const FetchOptions& options) {
+    return httpRequest(url, options, nullptr);
+}
+
+FetchResult httpPostJson(const std::string& url, const std::string& jsonBody, const FetchOptions& options) {
+    return httpRequest(url, options, &jsonBody);
 }
 
 }  // namespace teletext

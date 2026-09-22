@@ -1,5 +1,6 @@
 #include "navigator.h"
 
+#include <algorithm>
 #include <cstdio>
 
 namespace teletext {
@@ -18,26 +19,36 @@ std::string Navigator::targetLabel() const {
 void Navigator::goTo(int page) {
     entry_.clear();
     current_ = page;
+    currentSubPage_ = 0;
+    selectedLink_ = 0;
 }
 
-void Navigator::up(const PageStore& store) {
+void Navigator::stepPage(const PageStore& store, int direction) {
     entry_.clear();
-    current_ = store.nextPage(current_);
+    selectedLink_ = 0;
+    if (direction > 0) {
+        if (currentSubPage_ + 1 < store.subPageCount(current_)) {
+            ++currentSubPage_;
+            return;
+        }
+        current_ = store.nextPage(current_);
+    } else {
+        if (currentSubPage_ > 0) {
+            --currentSubPage_;
+            return;
+        }
+        current_ = store.prevPage(current_);
+    }
+    currentSubPage_ = 0;
 }
 
-void Navigator::down(const PageStore& store) {
+void Navigator::selectLink(int direction, int linkCount) {
     entry_.clear();
-    current_ = store.prevPage(current_);
-}
-
-void Navigator::left(const PageStore& store) {
-    entry_.clear();
-    current_ = store.prevArticle(current_);
-}
-
-void Navigator::right(const PageStore& store) {
-    entry_.clear();
-    current_ = store.nextArticle(current_);
+    if (linkCount <= 0) {
+        selectedLink_ = 0;
+        return;
+    }
+    selectedLink_ = std::clamp(selectedLink_ + direction, 0, linkCount - 1);
 }
 
 void Navigator::digit(int value, double now) {
@@ -48,7 +59,9 @@ void Navigator::digit(int value, double now) {
     lastDigitTime_ = now;
     if (entry_.size() == 3) {
         current_ = std::stoi(entry_);
+        currentSubPage_ = 0;
         entry_.clear();
+        selectedLink_ = 0;
     }
 }
 
@@ -68,14 +81,18 @@ bool Navigator::back(const PageStore& store) {
     if (cancelEntry()) {
         return true;
     }
-    const TeletextPage* page = store.find(current_);
+    const TeletextPage* page = store.find(current_, currentSubPage_);
     // A page that doesn't exist (typed number, or evicted by a refresh) has
-    // no recorded parent; the index is the sensible way out of it.
+    // no recorded parent; the index is the sensible way out of it. Every
+    // sub-page of a number shares that number's parent (see ard_pages.cpp),
+    // so this doesn't need to special-case currentSubPage_ > 0.
     const int parent = page ? page->parentPage : (current_ != kIndexPage ? kIndexPage : 0);
     if (parent == 0) {
         return false;
     }
     current_ = parent;
+    currentSubPage_ = 0;
+    selectedLink_ = 0;
     return true;
 }
 

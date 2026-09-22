@@ -39,7 +39,4 @@ struct SourceData {
 // remain rather than wasting them.
 std::shared_ptr<const PageStore> buildPageStore(const NewsConfig& config, const std::vector<SourceData>& data);
 
-// "Sun 20 Sep 08:41"-style local time, thread-safe.
-std::string formatLocalTime(std::time_t t, const char* format);
-
 }  // namespace teletext

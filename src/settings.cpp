@@ -116,6 +116,14 @@ bool loadSettings(const std::string& path, AppSettings& settings) {
             ok = parseFloat(value, settings.textScaleX);
         } else if (key == "text_scale_y") {
             ok = parseFloat(value, settings.textScaleY);
+        } else if (key == "teletext_menu_scale_x") {
+            ok = parseFloat(value, settings.teletextMenuScaleX);
+        } else if (key == "teletext_menu_scale_y") {
+            ok = parseFloat(value, settings.teletextMenuScaleY);
+        } else if (key == "teletext_text_scale_x") {
+            ok = parseFloat(value, settings.teletextTextScaleX);
+        } else if (key == "teletext_text_scale_y") {
+            ok = parseFloat(value, settings.teletextTextScaleY);
         } else if (key == "start_directory") {
             settings.startDirectory = value;
         } else if (key == "last_used_directory") {
@@ -190,6 +198,10 @@ bool saveSettings(const std::string& path, const AppSettings& settings) {
     file << "menu_scale_y=" << settings.menuScaleY << "\n";
     file << "text_scale_x=" << settings.textScaleX << "\n";
     file << "text_scale_y=" << settings.textScaleY << "\n";
+    file << "teletext_menu_scale_x=" << settings.teletextMenuScaleX << "\n";
+    file << "teletext_menu_scale_y=" << settings.teletextMenuScaleY << "\n";
+    file << "teletext_text_scale_x=" << settings.teletextTextScaleX << "\n";
+    file << "teletext_text_scale_y=" << settings.teletextTextScaleY << "\n";
     file << "start_directory=" << settings.startDirectory << "\n";
     file << "last_used_directory=" << settings.lastUsedDirectory << "\n";
     file << "show_hidden_files=" << (settings.showHiddenFiles ? "true" : "false") << "\n";

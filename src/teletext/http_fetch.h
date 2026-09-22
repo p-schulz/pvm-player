@@ -31,4 +31,10 @@ struct FetchResult {
 // on first use).
 FetchResult httpGet(const std::string& url, const FetchOptions& options = {});
 
+// Same, but POSTs `jsonBody` with a `Content-Type: application/json` header
+// (the shape the MediathekViewWeb API expects) -- everything else (timeouts,
+// size cap, cancel flag, User-Agent, redirect handling) is shared with
+// httpGet() via the same curl-easy setup.
+FetchResult httpPostJson(const std::string& url, const std::string& jsonBody, const FetchOptions& options = {});
+
 }  // namespace teletext

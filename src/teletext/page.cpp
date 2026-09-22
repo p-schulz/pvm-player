@@ -31,7 +31,7 @@ TeletextPage::TeletextPage() {
     } kButtons[4] = {{"-", Color::Red, Color::Black},
                      {"+", Color::Green, Color::Black},
                      {"News", Color::Yellow, Color::Black},
-                     {"Weather", Color::Blue, Color::White}};
+                     {"Refresh", Color::Blue, Color::White}};
     const int width = kCols / 4;
     for (int i = 0; i < 4; ++i) {
         const std::string label = kButtons[i].label;
@@ -97,23 +97,61 @@ void TeletextPage::setSixel(int row, int col, std::uint8_t mask, Color foregroun
     sixel[r][c] = static_cast<std::uint8_t>(kSixelFlag | (mask & 0x3F));
 }
 
-void PageStore::add(TeletextPage page) {
-    const int number = page.number;
-    pages_[number] = std::move(page);
+void TeletextPage::addPageLink(int row, int gotoPage, int col, int length) {
+    RowLink link;
+    link.row = row;
+    link.col = col;
+    link.length = length;
+    link.gotoPage = gotoPage;
+    links.push_back(std::move(link));
 }
 
-void PageStore::finalize() {
-    articleStarts_.clear();
-    for (const auto& [number, page] : pages_) {
-        if (page.isArticlePage() && page.articleFirstPage == number) {
-            articleStarts_.push_back(number);
-        }
+void TeletextPage::addPlayLink(int row, const std::string& url, const std::string& title, int col, int length) {
+    RowLink link;
+    link.row = row;
+    link.col = col;
+    link.length = length;
+    link.playUrl = url;
+    link.playTitle = title;
+    links.push_back(std::move(link));
+}
+
+void PageStore::add(TeletextPage page) {
+    if (page.subPage <= 0) {
+        const int number = page.number;
+        pages_[number] = std::move(page);
+    } else {
+        subPages_[page.number].push_back(std::move(page));
     }
 }
+
+void PageStore::finalize() {}
 
 const TeletextPage* PageStore::find(int number) const {
     auto it = pages_.find(number);
     return it == pages_.end() ? nullptr : &it->second;
+}
+
+const TeletextPage* PageStore::find(int number, int subPage) const {
+    if (subPage <= 0) {
+        return find(number);
+    }
+    if (!find(number)) {
+        return nullptr;  // the number itself doesn't exist: no sub-pages either
+    }
+    auto it = subPages_.find(number);
+    if (it == subPages_.end() || subPage > static_cast<int>(it->second.size())) {
+        return nullptr;
+    }
+    return &it->second[static_cast<size_t>(subPage - 1)];
+}
+
+int PageStore::subPageCount(int number) const {
+    if (!find(number)) {
+        return 0;
+    }
+    auto it = subPages_.find(number);
+    return 1 + (it == subPages_.end() ? 0 : static_cast<int>(it->second.size()));
 }
 
 int PageStore::nextPage(int from) const {
@@ -132,28 +170,6 @@ int PageStore::prevPage(int from) const {
     return it == pages_.begin() ? pages_.rbegin()->first : std::prev(it)->first;
 }
 
-int PageStore::nextArticle(int from) const {
-    if (articleStarts_.empty()) {
-        return from;
-    }
-    auto it = std::upper_bound(articleStarts_.begin(), articleStarts_.end(), from);
-    return it == articleStarts_.end() ? articleStarts_.front() : *it;
-}
-
-int PageStore::prevArticle(int from) const {
-    if (articleStarts_.empty()) {
-        return from;
-    }
-    // On a continuation page, "previous article" is relative to the article
-    // it belongs to, not to the continuation page's own number.
-    int reference = from;
-    if (const TeletextPage* page = find(from); page && page->isArticlePage()) {
-        reference = page->articleFirstPage;
-    }
-    auto it = std::lower_bound(articleStarts_.begin(), articleStarts_.end(), reference);
-    return it == articleStarts_.begin() ? articleStarts_.back() : *std::prev(it);
-}
-
 void composeHeader(TeletextPage& page, const std::string& targetLabel, const std::string& date,
                    const std::string& time) {
     char current[8];
@@ -165,6 +181,18 @@ void composeHeader(TeletextPage& page, const std::string& targetLabel, const std
                  Color::Cyan);
     page.putText(kHeaderRow, kHeaderDateCol, date, Color::White);
     page.putText(kHeaderRow, kHeaderDateCol + 7, time, Color::White);
+}
+
+std::string formatLocalTime(std::time_t t, const char* format) {
+    std::tm local{};
+#ifdef _WIN32
+    localtime_s(&local, &t);
+#else
+    localtime_r(&t, &local);
+#endif
+    char buf[64];
+    std::strftime(buf, sizeof(buf), format, &local);
+    return buf;
 }
 
 TeletextPage makeNotFoundPage(int number, const std::string& service) {

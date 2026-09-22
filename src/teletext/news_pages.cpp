@@ -48,11 +48,14 @@ std::string dotted(const std::string& text, int number) {
     return line + num;
 }
 
-// A row of a black-on-white list whose last three columns are a blue page number.
-void putListRow(TeletextPage& page, int row, const std::string& text, bool hasNumber) {
+// A row of a black-on-white list whose last three columns are a blue page
+// number when `linkPage` is set (also registered as a selectable RowLink,
+// so Up/Down can land on it and Enter jump there).
+void putListRow(TeletextPage& page, int row, const std::string& text, int linkPage = 0) {
     page.setLine(row, text, Color::Black, Color::White);
-    if (hasNumber) {
+    if (linkPage > 0) {
         page.paint(row, kCols - 3, 3, Color::Blue, Color::White);
+        page.addPageLink(row, linkPage);
     }
 }
 
@@ -61,11 +64,11 @@ struct Headline {
     int page = 0;
 };
 
-// One row of a headline list; `hasNumber` marks the row that ends in a page
-// number (the last row of each headline), which is drawn in blue.
+// One row of a headline list; `linkPage` (nonzero on the last row of each
+// headline) is the page it links to, drawn in blue.
 struct ListLine {
     std::string text;
-    bool hasNumber = false;
+    int linkPage = 0;
 };
 
 std::vector<ListLine> headlineRows(const Headline& h) {
@@ -80,7 +83,8 @@ std::vector<ListLine> headlineRows(const Headline& h) {
     std::vector<ListLine> lines;
     for (size_t i = 0; i < rows.size(); ++i) {
         const bool last = i + 1 == rows.size();
-        lines.push_back({last ? dotted(rows[i], h.page) : std::string(kListIndent, ' ') + rows[i], last});
+        lines.push_back({last ? dotted(rows[i], h.page) : std::string(kListIndent, ' ') + rows[i],
+                         last ? h.page : 0});
     }
     return lines;
 }
@@ -296,11 +300,11 @@ std::vector<ArticleRef> buildCategory(const NewsSource& src, const SourceData& d
         const int listRow = i == 0 ? kFirstPageListRow : kOtherPageListRow;
         const int listRows = i == 0 ? kFirstPageListRows : kOtherPageListRows;
         for (int r = 0; r < listRows; ++r) {
-            putListRow(page, listRow + r, "", false);  // the white block, even where it is empty
+            putListRow(page, listRow + r, "");  // the white block, even where it is empty
         }
         const auto& rows = rowsPerPage[static_cast<size_t>(i)];
         for (size_t r = 0; r < rows.size(); ++r) {
-            putListRow(page, listRow + static_cast<int>(r), rows[r].text, rows[r].hasNumber);
+            putListRow(page, listRow + static_cast<int>(r), rows[r].text, rows[r].linkPage);
         }
         std::string info = i == 0 ? statusText(data) : "";
         if (page.nextPage) {
@@ -321,12 +325,12 @@ TeletextPage buildIndex(const NewsConfig& config, const std::vector<SourceData>&
 
     const int listRows = std::max<int>(3, static_cast<int>(config.sources.size()) + 2);
     for (int r = 0; r < listRows; ++r) {
-        putListRow(page, kFirstPageListRow + r, "", false);
+        putListRow(page, kFirstPageListRow + r, "", 0);
     }
     if (config.sources.empty()) {
-        putListRow(page, kFirstPageListRow + 1, "  No news sources are configured.", false);
-        putListRow(page, kFirstPageListRow + 3, "  Add 'source=' lines to news.cfg", false);
-        putListRow(page, kFirstPageListRow + 4, "  next to the program.", false);
+        putListRow(page, kFirstPageListRow + 1, "  No news sources are configured.");
+        putListRow(page, kFirstPageListRow + 3, "  Add 'source=' lines to news.cfg");
+        putListRow(page, kFirstPageListRow + 4, "  next to the program.");
     }
 
     time_t latest = 0;
@@ -335,7 +339,8 @@ TeletextPage buildIndex(const NewsConfig& config, const std::vector<SourceData>&
     int withData = 0;
     for (size_t i = 0; i < config.sources.size(); ++i) {
         putListRow(page, kFirstPageListRow + 1 + static_cast<int>(i),
-                   dotted(config.sources[i].category, config.sources[i].startPage), true);
+                   dotted(config.sources[i].category, config.sources[i].startPage),
+                   config.sources[i].startPage);
         const SourceData empty;
         const SourceData& d = i < data.size() ? data[i] : empty;
         latest = std::max(latest, d.fetchedAt);
@@ -358,7 +363,7 @@ TeletextPage buildIndex(const NewsConfig& config, const std::vector<SourceData>&
         }
     }
     page.setLine(kInfoRow - 3, "Type a page number, or use:", Color::Yellow);
-    page.setLine(kInfoRow - 2, "UP/DOWN page  LEFT/RIGHT article", Color::Yellow);
+    page.setLine(kInfoRow - 2, "UP/DOWN select  LEFT/RIGHT page", Color::Yellow);
     page.setLine(kInfoRow, status, Color::Cyan);
     return page;
 }
@@ -426,13 +431,13 @@ TeletextPage buildHundredPage(int hundred, const std::vector<size_t>& members, c
 
     const int listRows = static_cast<int>(kTopArticles * kMaxHeadlineRows);
     for (int r = 0; r < listRows; ++r) {
-        putListRow(page, kFirstPageListRow + r, "", false);
+        putListRow(page, kFirstPageListRow + r, "");
     }
     if (rows.empty()) {
-        putListRow(page, kFirstPageListRow + 2, std::string(kListIndent, ' ') + "No articles available yet.", false);
+        putListRow(page, kFirstPageListRow + 2, std::string(kListIndent, ' ') + "No articles available yet.");
     }
     for (size_t r = 0; r < rows.size(); ++r) {
-        putListRow(page, kFirstPageListRow + static_cast<int>(r), rows[r].text, rows[r].hasNumber);
+        putListRow(page, kFirstPageListRow + static_cast<int>(r), rows[r].text, rows[r].linkPage);
     }
 
     // "Sections" below the list: "INLAND 210  INNENPOLITIK 260", wrapped.
@@ -470,18 +475,6 @@ TeletextPage buildHundredPage(int hundred, const std::vector<size_t>& members, c
 
 }  // namespace
 
-std::string formatLocalTime(std::time_t t, const char* format) {
-    std::tm local{};
-#ifdef _WIN32
-    localtime_s(&local, &t);
-#else
-    localtime_r(&t, &local);
-#endif
-    char buf[64];
-    std::strftime(buf, sizeof(buf), format, &local);
-    return buf;
-}
-
 std::shared_ptr<const PageStore> buildPageStore(const NewsConfig& config, const std::vector<SourceData>& data) {
     auto store = std::make_shared<PageStore>();
     std::vector<ArticleRef> allRefs;
@@ -511,13 +504,6 @@ std::shared_ptr<const PageStore> buildPageStore(const NewsConfig& config, const 
         store->add(buildIndex(config, data));
     }
 
-    // Without a weather page the blue key does nothing, so blank its label.
-    if (config.weatherPage == 0) {
-        store->forEachPage([](TeletextPage& page) {
-            const int blueCol = 3 * (kCols / 4);
-            page.putText(kFooterRow, blueCol, std::string(static_cast<size_t>(kCols / 4), ' '), Color::White);
-        });
-    }
     store->finalize();
     return store;
 }

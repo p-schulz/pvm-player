@@ -8,6 +8,7 @@
 #include <thread>
 #include <vector>
 
+#include "data_service.h"
 #include "news_config.h"
 #include "news_pages.h"
 #include "page.h"
@@ -23,19 +24,27 @@ namespace teletext {
 // publishes a fresh snapshot by atomically swapping a shared_ptr; readers
 // (the render thread) only ever call snapshot(), which is a lock-free-ish
 // atomic pointer copy and never waits on the network or on page building.
-class NewsService {
+class NewsService : public TeletextDataService {
 public:
     // `cacheDir` may be empty to disable the disk cache. Loads whatever the
     // cache holds and publishes it immediately, so snapshot() has real pages
     // before any network activity.
     NewsService(NewsConfig config, std::string cacheDir);
-    ~NewsService();
+    ~NewsService() override;
 
     NewsService(const NewsService&) = delete;
     NewsService& operator=(const NewsService&) = delete;
 
-    // The current page set. Never null; page 100 always exists.
-    std::shared_ptr<const PageStore> snapshot() const { return std::atomic_load(&snapshot_); }
+    std::shared_ptr<const PageStore> snapshot() const override { return std::atomic_load(&snapshot_); }
+    std::string serviceName() const override { return config_.serviceName; }
+
+    // Wakes the background loop so it refreshes right away instead of
+    // waiting out the rest of its interval. A no-op if the loop isn't
+    // running (start() was never called, or there are no sources). Not
+    // exact: if a refresh round is already in progress this only shortens
+    // the pause *between* sources, rather than restarting the round --
+    // simple, and never violates the polite per-source rate limit.
+    void requestRefresh() override;
 
     // Starts the background refresh loop: fetch everything now, then again
     // every refresh interval. Idempotent.
@@ -73,6 +82,7 @@ private:
     int intervalOverrideSeconds_ = 0;
     std::thread worker_;
     std::atomic<bool> stopRequested_{false};
+    std::atomic<bool> refreshRequested_{false};
     std::mutex wakeMutex_;
     std::condition_variable wake_;
 };

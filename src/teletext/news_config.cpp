@@ -112,12 +112,6 @@ void parseNewsConfig(const std::string& text, NewsConfig& config, std::vector<st
             config.serviceLogo = collapseWhitespace(toTeletextAscii(value));
             std::transform(config.serviceLogo.begin(), config.serviceLogo.end(), config.serviceLogo.begin(),
                            [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-        } else if (key == "weather_page") {
-            if (!parseInt(value, number) || number < 101 || number > kMaxPage) {
-                warn(lineNo, "weather_page must be a page number from 101 to 999");
-            } else {
-                config.weatherPage = number;
-            }
         } else if (key == "source") {
             std::vector<std::string> fields;
             std::istringstream fs(value);

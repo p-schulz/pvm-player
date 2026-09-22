@@ -190,10 +190,19 @@ void NewsService::stop() {
     worker_.join();
 }
 
+void NewsService::requestRefresh() {
+    {
+        std::lock_guard<std::mutex> lock(wakeMutex_);
+        refreshRequested_ = true;
+    }
+    wake_.notify_all();
+}
+
 void NewsService::runLoop() {
     const auto sleepFor = [this](std::chrono::milliseconds duration) {
         std::unique_lock<std::mutex> lock(wakeMutex_);
-        wake_.wait_for(lock, duration, [this] { return stopRequested_.load(); });
+        wake_.wait_for(lock, duration, [this] { return stopRequested_.load() || refreshRequested_.load(); });
+        refreshRequested_ = false;
         return !stopRequested_;
     };
 

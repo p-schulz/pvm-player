@@ -20,12 +20,16 @@
 #include "paths.h"
 #include "settings.h"
 #include "shader.h"
+#include "teletext/mvw_config.h"
+#include "teletext/mvw_service.h"
 #include "teletext/news_config.h"
+#include "teletext/news_service.h"
 #include "teletext/teletext_view.h"
 #include "ui/style.h"
 
 #ifdef __APPLE__
 #include "macos_media_keys.h"
+#include "macos_sleep_guard.h"
 #endif
 
 namespace fs = std::filesystem;
@@ -404,6 +408,10 @@ bool App::init(int width, int height, const char* title) {
     loadedSettings.menuScaleY = menuScaleY_;
     loadedSettings.textScaleX = textScaleX_;
     loadedSettings.textScaleY = textScaleY_;
+    loadedSettings.teletextMenuScaleX = teletextMenuScaleX_;
+    loadedSettings.teletextMenuScaleY = teletextMenuScaleY_;
+    loadedSettings.teletextTextScaleX = teletextTextScaleX_;
+    loadedSettings.teletextTextScaleY = teletextTextScaleY_;
     loadedSettings.showHiddenFiles = showHiddenFiles_;
     loadedSettings.startDirectory = startDirectory_;
     loadedSettings.lastUsedDirectory = lastUsedDirectory_;
@@ -457,6 +465,10 @@ bool App::init(int width, int height, const char* title) {
     menuScaleY_ = std::clamp(loadedSettings.menuScaleY, 0.3f, 3.0f);
     textScaleX_ = std::clamp(loadedSettings.textScaleX, 0.3f, 3.0f);
     textScaleY_ = std::clamp(loadedSettings.textScaleY, 0.3f, 3.0f);
+    teletextMenuScaleX_ = std::clamp(loadedSettings.teletextMenuScaleX, 0.3f, 3.0f);
+    teletextMenuScaleY_ = std::clamp(loadedSettings.teletextMenuScaleY, 0.3f, 3.0f);
+    teletextTextScaleX_ = std::clamp(loadedSettings.teletextTextScaleX, 0.3f, 3.0f);
+    teletextTextScaleY_ = std::clamp(loadedSettings.teletextTextScaleY, 0.3f, 3.0f);
     showHiddenFiles_ = loadedSettings.showHiddenFiles;
     startDirectory_ = loadedSettings.startDirectory;
     lastUsedDirectory_ = loadedSettings.lastUsedDirectory;
@@ -514,9 +526,11 @@ bool App::init(int width, int height, const char* title) {
     ImGui_ImplOpenGL3_Init("#version 330 core");
     imguiInitialized_ = true;
 
-    rootMenu_.setItems({{"PLAY MEDIA"}, {"NEWS"}, {"TAGESSCHAU"}, {"SETTINGS"}, {"EXIT"}});
+    rootMenu_.setItems({{"PLAY MEDIA"}, {"NEWS"}, {"TAGESSCHAU"}, {"ARD"}, {"ZDF"}, {"SETTINGS"}, {"EXIT"}});
     initTeletextSection(newsSection_, dir, "news", "PVM_NEWS_CONFIG");
     initTeletextSection(tagesschauSection_, dir, "tagesschau", "PVM_TAGESSCHAU_CONFIG");
+    initMvwSection(ardSection_, dir, "ard", "PVM_ARD_CONFIG");
+    initMvwSection(zdfSection_, dir, "zdf", "PVM_ZDF_CONFIG");
 
 #ifdef __APPLE__
     // Lets the hardware Play/Pause media key toggle playback in addition
@@ -660,6 +674,10 @@ void App::saveCurrentSettings() const {
     settings.menuScaleY = menuScaleY_;
     settings.textScaleX = textScaleX_;
     settings.textScaleY = textScaleY_;
+    settings.teletextMenuScaleX = teletextMenuScaleX_;
+    settings.teletextMenuScaleY = teletextMenuScaleY_;
+    settings.teletextTextScaleX = teletextTextScaleX_;
+    settings.teletextTextScaleY = teletextTextScaleY_;
     settings.showHiddenFiles = showHiddenFiles_;
     settings.startDirectory = startDirectory_;
     settings.lastUsedDirectory = lastUsedDirectory_;
@@ -724,6 +742,12 @@ void App::run() {
         if (screen_ == Screen::Playing && mpv_.consumeEndOfFile()) {
             onPlaybackStopped();
         }
+#ifdef __APPLE__
+        // Keep the display awake while actually playing (not while paused,
+        // or on any other screen) -- see macos_sleep_guard.h for why mpv's
+        // own screensaver inhibition doesn't reach this app's render setup.
+        macos_sleep_guard::setActive(screen_ == Screen::Playing && !mpv_.isPaused());
+#endif
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
@@ -990,7 +1014,9 @@ void App::renderPlaybackHud() {
             // No "menu scale" here -- the playback HUD isn't a menu screen --
             // but text scale still applies everywhere text is drawn.
             VertexScaleScope textScope(textScaleX_, textScaleY_);
-            drawOutlinedText(mpv_.filename().empty() ? "(no media loaded)" : basename(mpv_.filename()));
+            drawOutlinedText(mpv_.filename().empty()          ? "(no media loaded)"
+                             : !playbackTitleOverride_.empty() ? playbackTitleOverride_
+                                                               : basename(mpv_.filename()));
 
             char timeLine[64];
             std::snprintf(timeLine, sizeof(timeLine), "%s / %s", formatTimestamp(mpv_.timePositionSeconds()).c_str(),
@@ -1617,6 +1643,12 @@ std::vector<App::SettingsRowDesc> App::buildSettingsRows() {
     rows.push_back(floatRow("Text Scale X", &textScaleX_, 0.3f, 3.0f, 0.05f));
     rows.push_back(floatRow("Text Scale Y", &textScaleY_, 0.3f, 3.0f, 0.05f));
 
+    // The same for the teletext screens (grid resize / glyph stretch).
+    rows.push_back(floatRow("Teletext Menu X", &teletextMenuScaleX_, 0.3f, 3.0f, 0.05f));
+    rows.push_back(floatRow("Teletext Menu Y", &teletextMenuScaleY_, 0.3f, 3.0f, 0.05f));
+    rows.push_back(floatRow("Teletext Text X", &teletextTextScaleX_, 0.3f, 3.0f, 0.05f));
+    rows.push_back(floatRow("Teletext Text Y", &teletextTextScaleY_, 0.3f, 3.0f, 0.05f));
+
     rows.push_back(boolRow("Hidden Files", &showHiddenFiles_, "Show", "Hide"));
 
     SettingsRowDesc startDirRow;
@@ -1817,13 +1849,15 @@ void App::activateRootMenuItem(int index) {
             break;
         case 1:  // News
         case 2:  // Tagesschau
+        case 3:  // ARD
+        case 4:  // ZDF
             openTeletext(index);
             break;
-        case 3:  // Settings
+        case 5:  // Settings
             settingsSelectedRow_ = 0;
             screen_ = Screen::Settings;
             break;
-        case 4:  // Exit
+        case 6:  // Exit
             glfwSetWindowShouldClose(window_, GLFW_TRUE);
             break;
         default:
@@ -1908,6 +1942,7 @@ void App::handleKey(int key, int scancode, int action) {
                                 currentMediaKind_ = extensionIn(path, kVideoExtensions)   ? MediaKind::Video
                                                      : extensionIn(path, kAudioExtensions) ? MediaKind::Audio
                                                                                             : MediaKind::Unknown;
+                                playbackTitleOverride_.clear();  // a local file's own basename is a real title
                                 screen_ = Screen::Playing;
                             }
                         }
@@ -2139,17 +2174,23 @@ void App::handleKey(int key, int scancode, int action) {
     }
 }
 
-// Up/Down = next/previous page number, Left/Right = previous/next article,
-// the colored keys of the bottom bar (F1-F4, or R/G/Y/B): red "-" previous page,
-// green "+" next page, yellow "News" (or M) the index page 100, blue "Weather" weather_page,
-// digits (main row or keypad -- the Xbox 360 remote sends the latter) = direct
-// page entry; ESC/Backspace = back: abandon a half-typed number, else article ->
-// headlines -> index -> leave NEWS.
+// Up/Down = move the highlighted selection among the current page's links
+// (a headline, a category, a show, an episode); Enter activates it -- a
+// page link jumps there, a play link (ARD only) loads it into the player.
+// Left/Right = previous/next page number. The colored keys of the bottom
+// bar (F1-F4, or R/G/Y/B): red "-" previous page, green "+" next page
+// (same as Left/Right), yellow "News" (or M) the index page 100, blue
+// "Refresh" re-fetches this section right now. Digits (main row or keypad
+// -- the Xbox 360 remote sends the latter) = direct page entry; ESC/
+// Backspace = back: abandon a half-typed number, else climb a level, else
+// leave the section.
 void App::handleTeletextKey(int key, int action) {
     teletext::Navigator& nav = activeTeletext_->nav;
-    const teletext::NewsService& service = *activeTeletext_->service;
+    teletext::TeletextDataService& service = *activeTeletext_->service;
     const std::shared_ptr<const teletext::PageStore> snapshot = service.snapshot();
     const teletext::PageStore& store = *snapshot;
+    const teletext::TeletextPage* page = store.find(nav.currentPage(), nav.currentSubPage());
+    const int linkCount = page ? static_cast<int>(page->links.size()) : 0;
 
     if (key >= GLFW_KEY_0 && key <= GLFW_KEY_9) {
         if (action == GLFW_PRESS) {
@@ -2166,31 +2207,33 @@ void App::handleTeletextKey(int key, int action) {
 
     switch (key) {
         case GLFW_KEY_UP:
-        case GLFW_KEY_F2:  // green "+"
-        case GLFW_KEY_G:
-            nav.up(store);
+            nav.selectLink(-1, linkCount);
             break;
         case GLFW_KEY_DOWN:
+            nav.selectLink(1, linkCount);
+            break;
+        case GLFW_KEY_LEFT:
         case GLFW_KEY_F1:  // red "-"
         case GLFW_KEY_R:
-            nav.down(store);
+            nav.stepPage(store, -1);
+            break;
+        case GLFW_KEY_RIGHT:
+        case GLFW_KEY_F2:  // green "+"
+        case GLFW_KEY_G:
+            nav.stepPage(store, 1);
             break;
         case GLFW_KEY_F3:  // yellow "News"
         case GLFW_KEY_Y:
         case GLFW_KEY_M:   // "menu": back to page 100 from anywhere
             if (action == GLFW_PRESS) nav.goTo(teletext::kIndexPage);
             break;
-        case GLFW_KEY_F4:  // blue "Weather"
+        case GLFW_KEY_F4:  // blue "Refresh"
         case GLFW_KEY_B:
-            if (action == GLFW_PRESS && service.config().weatherPage > 0) {
-                nav.goTo(service.config().weatherPage);
-            }
+            if (action == GLFW_PRESS) service.requestRefresh();
             break;
-        case GLFW_KEY_LEFT:
-            nav.left(store);
-            break;
-        case GLFW_KEY_RIGHT:
-            nav.right(store);
+        case GLFW_KEY_ENTER:
+        case GLFW_KEY_KP_ENTER:
+            if (action == GLFW_PRESS) activateTeletextSelection();
             break;
         case GLFW_KEY_ESCAPE:
         case GLFW_KEY_BACKSPACE:
@@ -2200,6 +2243,25 @@ void App::handleTeletextKey(int key, int action) {
             break;
         default:
             break;
+    }
+}
+
+void App::activateTeletextSelection() {
+    teletext::Navigator& nav = activeTeletext_->nav;
+    const std::shared_ptr<const teletext::PageStore> snapshot = activeTeletext_->service->snapshot();
+    const teletext::TeletextPage* page = snapshot->find(nav.currentPage(), nav.currentSubPage());
+    const int index = nav.selectedLink();
+    if (!page || index < 0 || index >= static_cast<int>(page->links.size())) {
+        return;
+    }
+    const teletext::RowLink& link = page->links[static_cast<size_t>(index)];
+    if (link.gotoPage > 0) {
+        nav.goTo(link.gotoPage);
+    } else if (!link.playUrl.empty() && loadMedia(link.playUrl)) {
+        currentMediaKind_ = MediaKind::Video;
+        cameFromTeletext_ = true;
+        playbackTitleOverride_ = link.playTitle;
+        screen_ = Screen::Playing;
     }
 }
 
@@ -2230,35 +2292,88 @@ void App::initTeletextSection(TeletextSection& section, const std::string& exeDi
 
     // Cached pages are loaded (and published) right here in the constructor;
     // the live refresh then runs on the service's own thread.
-    section.service = std::make_unique<teletext::NewsService>(std::move(config), exeDirectory + "/cache/" + baseName);
+    auto service = std::make_unique<teletext::NewsService>(std::move(config), exeDirectory + "/cache/" + baseName);
     if (const char* env = std::getenv("PVM_TEST_NEWS_REFRESH_SECONDS")) {
-        section.service->setRefreshIntervalSecondsForTesting(std::atoi(env));
+        service->setRefreshIntervalSecondsForTesting(std::atoi(env));
     }
-    section.service->start();
+    service->start();
+    section.service = std::move(service);
+}
+
+// Same idea as initTeletextSection(), but for a MediathekViewWeb-backed
+// section's own config shape (a channel, favorites and the generated A-Z
+// window, see teletext/mvw_config.h) and service (teletext/mvw_service.h).
+void App::initMvwSection(TeletextSection& section, const std::string& exeDirectory, const std::string& baseName,
+                         const char* envVar) {
+    teletext::MvwConfig config;
+    std::vector<std::string> warnings;
+
+    std::string path;
+    if (const char* env = std::getenv(envVar)) {
+        path = env;
+    } else if (fs::exists(exeDirectory + "/" + baseName + ".cfg")) {
+        path = exeDirectory + "/" + baseName + ".cfg";
+    } else {
+        path = exeDirectory + "/" + baseName + ".default.cfg";
+    }
+    if (!teletext::loadMvwConfig(path, config, &warnings)) {
+        std::fprintf(stderr, "[%s] no config at %s -- this section will have no favorites\n", baseName.c_str(),
+                     path.c_str());
+    }
+    for (const std::string& w : warnings) {
+        std::fprintf(stderr, "[%s] %s\n", baseName.c_str(), w.c_str());
+    }
+
+    auto service = std::make_unique<teletext::MvwService>(std::move(config), exeDirectory + "/cache/" + baseName);
+    if (const char* env = std::getenv("PVM_TEST_NEWS_REFRESH_SECONDS")) {
+        service->setRefreshIntervalSecondsForTesting(std::atoi(env));
+    }
+    service->start();
+    section.service = std::move(service);
 }
 
 void App::openTeletext(int rootMenuIndex) {
-    activeTeletext_ = rootMenuIndex == 2 ? &tagesschauSection_ : &newsSection_;
+    switch (rootMenuIndex) {
+        case 1:
+            activeTeletext_ = &newsSection_;
+            break;
+        case 2:
+            activeTeletext_ = &tagesschauSection_;
+            break;
+        case 3:
+            activeTeletext_ = &ardSection_;
+            break;
+        case 4:
+            activeTeletext_ = &zdfSection_;
+            break;
+        default:
+            activeTeletext_ = &newsSection_;
+            break;
+    }
     activeTeletext_->nav.goTo(teletext::kIndexPage);
     screen_ = Screen::News;
 }
 
 void App::renderTeletext() {
     teletext::Navigator& nav = activeTeletext_->nav;
-    const teletext::NewsService& service = *activeTeletext_->service;
+    const teletext::TeletextDataService& service = *activeTeletext_->service;
     nav.update(glfwGetTime());
 
     const std::shared_ptr<const teletext::PageStore> snapshot = service.snapshot();
     teletext::TeletextPage placeholder;
-    const teletext::TeletextPage* page = snapshot->find(nav.currentPage());
+    const teletext::TeletextPage* page = snapshot->find(nav.currentPage(), nav.currentSubPage());
     if (!page) {
-        placeholder = teletext::makeNotFoundPage(nav.currentPage(), service.config().serviceName);
+        placeholder = teletext::makeNotFoundPage(nav.currentPage(), service.serviceName());
         page = &placeholder;
     }
 
     const std::time_t now = std::time(nullptr);
+    const int selectedLink = page->links.empty() ? -1 : std::clamp(nav.selectedLink(), 0,
+                                                                    static_cast<int>(page->links.size()) - 1);
     teletext::drawPage(*page, nav.targetLabel(), teletext::formatLocalTime(now, "%d.%m."),
-                       teletext::formatLocalTime(now, "%H:%M:%S"));
+                       teletext::formatLocalTime(now, "%H:%M:%S"),
+                       {teletextMenuScaleX_, teletextMenuScaleY_, teletextTextScaleX_, teletextTextScaleY_},
+                       selectedLink);
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -2267,6 +2382,17 @@ void App::renderTeletext() {
 void App::onPlaybackStopped() {
     currentMediaKind_ = MediaKind::Unknown;
     osdMenuVisible_ = false;
+    playbackTitleOverride_.clear();
+
+    // A play link from a teletext page (ARD): return to that exact page --
+    // activeTeletext_ and its Navigator (current page + selected row) were
+    // never touched while Playing, so this is the whole of "returning".
+    if (cameFromTeletext_) {
+        cameFromTeletext_ = false;
+        screen_ = Screen::News;
+        return;
+    }
+
     screen_ = Screen::RootMenu;
 
     // Remember where we were browsing so "Play Media" resumes here next
@@ -2293,8 +2419,11 @@ void App::shutdown() {
     // Joins the refresh threads (aborting any transfer in flight).
     newsSection_.service.reset();
     tagesschauSection_.service.reset();
+    ardSection_.service.reset();
+    zdfSection_.service.reset();
 #ifdef __APPLE__
     macos_media_keys::shutdown();
+    macos_sleep_guard::shutdown();
 #endif
     if (imguiInitialized_) {
         ImGui_ImplOpenGL3_Shutdown();

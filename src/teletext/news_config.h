@@ -24,7 +24,6 @@ struct NewsConfig {
     int refreshMinutes = 15;
     int blockSize = 10;                // pages reserved per category (headline page(s) + articles)
     int maxArticlePages = 3;           // cap per article; longer text is cut with a notice
-    int weatherPage = 0;               // where the blue "Weather" key goes (0 = nowhere; the label is then blank)
 
     // false: page 100 is one index listing every source (the NEWS section).
     // true: every hundred page (100, 200, ... 900) that has sources in its
@@ -44,7 +43,6 @@ constexpr int kMinRefreshMinutes = 5;
 //   refresh_minutes=15
 //   block_size=10
 //   max_article_pages=3
-//   weather_page=150
 //   overview_pages=hundreds        (or "index", the default)
 //   service_name=tagesschau.de     service_logo=TAGESSCHAU
 //   source=110 | WORLD | https://feeds.bbci.co.uk/news/world/rss.xml | bbc.co.uk | BBC NEWS

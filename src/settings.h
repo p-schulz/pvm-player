@@ -34,6 +34,13 @@ struct AppSettings {
     float textScaleX = 1.0f;
     float textScaleY = 1.0f;
 
+    // Scaling of the teletext screens (NEWS / TAGESSCHAU), independent of the
+    // menu scaling above; see teletext::TeletextScale.
+    float teletextMenuScaleX = 1.0f;
+    float teletextMenuScaleY = 1.0f;
+    float teletextTextScaleX = 1.0f;
+    float teletextTextScaleY = 1.0f;
+
     // Directory the file browser starts at (user-configurable, via a
     // folder-picker settings row) and the directory it was last in when
     // media playback stopped (auto-tracked; takes priority over
