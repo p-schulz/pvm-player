@@ -6,7 +6,8 @@ an optional CRT post-process pass (scanlines, vignette, bloom, color tear)
 over whatever's playing.
 
 <p align="center">
-  <img src="docs/screenshot-menu.png" alt="PVM-style root menu" width="420">  <img src="docs/screenshot-playback.png" alt="Video playback with the CRT effect" width="420">
+  <img src="docs/screenshot-menu-current.png" alt="PVM-style root menu" width="420">
+  <img src="docs/screenshot-playback.png" alt="Video playback with the CRT effect" width="380">
 </p>
 
 ## Features
@@ -19,6 +20,11 @@ over whatever's playing.
   (including *above* the configured root, up to the filesystem root), a
   configurable start directory, automatic "resume where you left off", and
   a hidden-files toggle
+- **NEWS**, **TAGESSCHAU**, **ARD** and **ZDF**: teletext-style readers --
+  numbered 3-digit pages on a 40x24 monospace grid. NEWS/TAGESSCHAU are fed
+  by RSS/Atom sources you configure; ARD/ZDF each browse and play their own
+  Mediathek's videos via the MediathekViewWeb API. All four refresh in the
+  background and cache to disk (see [NEWS](#news-teletext) below)
 - **CRT post-process pass**: scanlines, vignette, bloom, and a chromatic
   "color tear" effect, each independently tunable, plus always-on
   brightness/contrast/saturation controls — toggle the whole effect with
@@ -28,13 +34,20 @@ over whatever's playing.
   uncapped font size, 5 menu screen positions, 3 selection-highlight
   styles, and independent X/Y stretch for the menu panel and for text
 - Settings persist to a plain-text `config.cfg` next to the executable
+- **Stays awake during playback** (macOS): the display's idle-sleep timer is
+  held off while a video is actively playing (not while paused, or on any
+  other screen), so the screen doesn't blank mid-movie on battery power
 
 ## Building
 
-Requires CMake 3.20+, a C++17 compiler, and [libmpv](https://mpv.io/)
+Requires CMake 3.20+, a C++17 compiler, [libmpv](https://mpv.io/)
 (e.g. `brew install mpv` on macOS, or vendor a prebuilt Windows SDK under
-`thirdparty/libmpv/`). GLFW, glad, and Dear ImGui are fetched/vendored
-automatically.
+`thirdparty/libmpv/`), and libcurl (bundled with macOS; `libcurl4-openssl-dev`
+on Debian/Raspberry Pi OS). [pugixml](https://pugixml.org/) is used from the
+system if installed (`brew install pugixml` / `apt install libpugixml-dev`)
+and otherwise fetched and built automatically. GLFW, glad, Dear ImGui and
+[nlohmann/json](https://github.com/nlohmann/json) (the ARD section's JSON
+parser) are vendored/fetched automatically.
 
 ```sh
 cmake -S . -B build
@@ -61,16 +74,12 @@ for everyday use.
 | ← / →                 | Seek ±5s (playback) or adjust a setting     |
 | C                     | Toggle the CRT effect                      |
 
-Explicitly out of scope for this prototype: subtitles, network streaming,
-playlist persistence, metadata/artwork scraping, and audio visualizations.
-
-
 ## NEWS (teletext)
 
-The root menu's **NEWS** entry opens a teletext-style reader: a 40x24
-character grid (the World System Teletext geometry) in the eight teletext
-colors, using whichever font is selected in Settings (the teletext-style
-fonts under `assets/fonts/` suit it best).
+The root menu's **NEWS**, **TAGESSCHAU** and **ARD** entries each open a
+teletext-style reader: a 40x24 character grid (the World System Teletext
+geometry) in the eight teletext colors, using whichever font is selected in
+Settings (the teletext-style fonts under `assets/fonts/` suit it best). 
 
 **Pages.** 100 is the index. Each configured source owns a block of pages:
 its first page is a headline list, the following pages hold articles
@@ -79,13 +88,14 @@ its first page is a headline list, the following pages hold articles
 
 | Key(s)                | Action                                                        |
 |------------------------|----------------------------------------------------------------|
-| ↑ / ↓                  | Next / previous page number (skipping unpopulated numbers)    |
-| ← / →                  | Previous / next *article* (skips continuation pages)          |
+| ↑ / ↓                  | Move the highlighted selection among this page's links (a headline, a category, a show, an episode) |
+| Enter                  | Activate the selected link: jump to a page, or (ARD) play an episode |
+| ← / →                  | Previous / next *page number* (skipping unpopulated numbers) -- on ARD, turns a page's own sub-pages first (see [ARD](#ard)) |
 | 0-9 (or keypad 0-9)    | Type a page number; jumps on the 3rd digit                    |
-| Red / Green (F1 / F2, or R / G) | `-` previous page / `+` next page, like the bottom bar |
+| Red / Green (F1 / F2, or R / G) | `-` previous page / `+` next page, same as ←/→        |
 | Yellow (F3 or Y), M    | `News`: the index, page 100                                   |
-| Blue (F4 or B)         | `Weather`: the page set by `weather_page` in `news.cfg`       |
-| Esc / Backspace        | Back: cancels a half-typed number, else article → headlines → index → leave NEWS |
+| Blue (F4 or B)         | `Refresh`: re-fetch this section right now, bypassing its normal timer/cache |
+| Esc / Backspace        | Back: cancels a half-typed number, else climbs a level, else leaves the section |
 
 A page number nobody has typed a third digit for is abandoned after 3 seconds.
 A number with no page behind it shows a "PAGE NOT FOUND" placeholder.
@@ -98,15 +108,13 @@ copy it to `news.cfg` to edit it):
 refresh_minutes=15
 block_size=10
 max_article_pages=3
-weather_page=150
 source=110 | WORLD | https://feeds.bbci.co.uk/news/world/rss.xml | bbc.co.uk | BBC NEWS
 ```
 
 A source is `start page | CATEGORY | feed URL`, optionally followed by
 `| provider` (the cyan header text; defaults to the URL's host) and
 `| LOGO` (the title-art text, up to 13 letters/digits; defaults to the
-category). The blue `Weather` key jumps to `weather_page`; the shipped config
-points it at the wetter.com weather feed (German).
+category).
 
 **Refreshing and caching.** Feeds are fetched on a background thread (never
 on the render loop, so video playback is unaffected), one source at a time,
@@ -128,9 +136,8 @@ Only the feed URLs you configure are fetched (no page scraping, no
 images), with an identifying `User-Agent`. Logic tests run with
 `ctest --test-dir build`.
 
+<a id="tagesschau"></a>
 ### TAGESSCHAU
-
-This is to be just a wrapper/viewer for the tagesschau RSS feeds and is not shipped with this project, as any commercial use and other publication is not allowed.
 
 <p align="center">
   <img src="docs/screenshot-tagesschau-overview.png" alt="TAGESSCHAU page 100: title art, top stories with page numbers, section list" width="380">
@@ -160,8 +167,43 @@ index (logo banner plus headlines); article pages follow, newest first, and
 never use the hundred pages -- a range like 510-699 simply passes over 600
 (whose overview lists the same newest stories if the feed did not reach that
 far). Esc/Backspace climbs article → section index → hundred page → page 100
-→ leave. The blue key has no target in this section, so its label is blank.
+→ leave.
 
 Both sections use the same file format: `source=` lines take a page range
 (`210-259`) instead of a start page, and `overview_pages=hundreds`,
 `service_name=` and `service_logo=` switch a config into this overview style.
+
+<a id="ard"></a>
+### ARD / ZDF
+
+<p align="center">
+  <img src="docs/screenshot-playback-ard.png" alt="Video playback with the CRT effect" width="420">
+</p>
+
+The root menu's **ARD** and **ZDF** entries are each a browsable, playable
+catalog of currently-available Mediathek videos -- one broadcaster's
+`channel` per entry -- built from the
+[MediathekViewWeb](https://mediathekviewweb.de/) API, a community-run,
+publicly documented aggregator across the German public broadcasters (chosen
+over each broadcaster's own private, undocumented backend API). Both entries
+are the exact same code (`teletext/mvw_*`) running against two different
+config files, `ard.cfg` and `zdf.cfg` -- everything below applies to either,
+substituting `zdf.cfg`/`ZDF` for `ard.cfg`/`ARD` as needed. Unlike
+NEWS/TAGESSCHAU, a selected row can *play* a video directly instead of only
+linking to another page:
+
+Configured in `ard.cfg`/`zdf.cfg` (shipped as `ard.default.cfg`/
+`zdf.default.cfg`, from [`conf/ard.cfg`](conf/ard.cfg)/
+[`conf/zdf.cfg`](conf/zdf.cfg)):
+
+```
+channel=ARD
+service_name=ARD Mediathek
+service_logo=ARD MEDIATHEK
+refresh_minutes=60
+max_episode_pages=30
+az_start_page=200
+az_window_days=14
+favorite=110 | Babylon Berlin | BABYLON BERLIN
+```
+
