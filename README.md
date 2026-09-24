@@ -7,7 +7,7 @@ over whatever's playing.
 
 <p align="center">
   <img src="docs/screenshot-menu-current.png" alt="PVM-style root menu" width="420">
-  <img src="docs/screenshot-playback.png" alt="Video playback with the CRT effect" width="380">
+  <img src="docs/screenshot-playback.jpg" alt="Video playback with the CRT effect" width="380">
 </p>
 
 ## Features
