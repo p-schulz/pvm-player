@@ -151,6 +151,11 @@ void FileBrowser::moveDown() {
     selectedIndex_ = std::min(static_cast<int>(entries_.size()) - 1, selectedIndex_ + 1);
 }
 
+void FileBrowser::moveBy(int delta) {
+    if (entries_.empty()) return;
+    selectedIndex_ = std::clamp(selectedIndex_ + delta, 0, static_cast<int>(entries_.size()) - 1);
+}
+
 bool FileBrowser::selectedIsDirectory() const {
     if (entries_.empty()) return false;
     return entries_[selectedIndex_].isDirectory;

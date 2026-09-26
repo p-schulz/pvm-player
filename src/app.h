@@ -48,6 +48,26 @@ public:
     // Releases GL/ImGui/mpv resources. Safe to call multiple times.
     void shutdown();
 
+    // The app going to the background (true) and coming back (false): pauses
+    // playback while away and resumes it afterwards, unless the user had
+    // paused it themselves.
+    void setSuspended(bool suspended);
+
+    // What is playing, enough to carry it over to a fresh App after the GL
+    // context was lost (see the platform's recovery): the file, where in it,
+    // and whether it was paused. `valid` is false when nothing is playing.
+    struct PlaybackSnapshot {
+        bool valid = false;
+        std::string path;
+        double positionSeconds = 0.0;
+        bool paused = false;
+        std::string title;
+        bool fromTeletext = false;
+        int mediaKind = 0;
+    };
+    PlaybackSnapshot snapshotPlayback() const;
+    void restorePlayback(const PlaybackSnapshot& snapshot);
+
 private:
     enum class Screen { RootMenu, FileBrowser, Settings, PickStartDirectory, Playing, News };
     enum class MediaKind { Unknown, Video, Audio };
@@ -99,7 +119,7 @@ private:
         std::string actionValue;
     };
 
-    bool loadMedia(const std::string& path);
+    bool loadMedia(const std::string& path, double startSeconds = 0.0);
 
     void renderFrame();
     void renderHud();
@@ -178,12 +198,29 @@ private:
     // Everything below this point reacts to actions only; turning raw
     // key/button events into actions is the platform's job.
     void handleInput(const input::InputEvent& event);
+    // Applies a batch of events, treating the events of one press (same
+    // InputEvent::group) as one: once the first of them has changed what the
+    // input means (screen, OSD, page spinner), the rest are dropped, so a
+    // button bound to "confirm" and "play/pause" doesn't also pause the video
+    // its confirm just started.
+    void dispatchEvents(const std::vector<input::InputEvent>& events);
+    int inputContext() const;
     void handleTeletextInput(const input::InputEvent& event);
     // PVM_TEST_SIMULATE_KEYS entry: an action name ("confirm",
     // "fastext_red") or a key name as in keys.cfg, the latter translated by
     // the platform's real key map.
     void injectSimulatedKey(const std::string& token);
     void openTeletext(int rootMenuIndex);
+    // Root-menu index (1..4) of the section after the current/last one, wrapping.
+    int nextSectionIndex() const;
+    // Changes the playback volume by `points` (fractions accumulate across
+    // calls, so analog input slower than one point per event still moves it).
+    void adjustVolume(float points);
+    // The page-number spinner (see PageEntry): opens on the current page,
+    // and handles a teletext input event while open.
+    void openPageEntry();
+    void handlePageEntryInput(const input::InputEvent& event);
+    void renderPageEntry();
     // Enter on a teletext page: acts on activeTeletext_->nav's selected
     // RowLink -- a page link jumps there, a play link loads it into the
     // player (remembering to return to this same teletext page on stop).
@@ -222,6 +259,10 @@ private:
     // config.cfg either way so the file stays shareable between platforms.
     bool fullscreen_ = false;
     int monitorIndex_ = 0;
+    // Persisted only; acted on by the platform's launcher (see
+    // Platform::hasLaunchDisplaySetting()).
+    bool launchOnTopScreen_ = true;
+    bool hardwareDecoding_ = false;  // the platform's default until settings are loaded
     std::vector<std::string> monitorChoiceNames_;
 
     // Text outline ("Outline"/"Outline R/G/B"/"Outline Strength" settings
@@ -381,21 +422,39 @@ private:
     // Loads <baseName>.cfg from dataDir (else <baseName>.default.cfg from
     // assetDir, else `envVar`'s path if that environment variable is set)
     // and starts the NEWS/TAGESSCHAU section's background refresh, caching
-    // under dataDir; cached pages are available at once.
+    // under cacheDir/<baseName>; cached pages are available at once.
     void initTeletextSection(TeletextSection& section, const std::string& dataDir, const std::string& assetDir,
-                             const std::string& baseName, const char* envVar);
+                             const std::string& cacheDir, const std::string& baseName, const char* envVar);
     // Same idea for a MediathekViewWeb-backed section (ARD, ZDF, ...), which
     // has its own config shape (a channel, favorites and the generated A-Z
     // window) -- see teletext/mvw_config.h. `baseName` picks the config file
     // (e.g. "ard" -> ard.cfg/ard.default.cfg) and the cache subdirectory;
     // `envVar` is the config-path override environment variable.
     void initMvwSection(TeletextSection& section, const std::string& dataDir, const std::string& assetDir,
-                        const std::string& baseName, const char* envVar);
+                        const std::string& cacheDir, const std::string& baseName, const char* envVar);
     TeletextSection newsSection_;
     TeletextSection tagesschauSection_;
     TeletextSection ardSection_;
     TeletextSection zdfSection_;
     TeletextSection* activeTeletext_ = &newsSection_;
+    int lastSectionMenuIndex_ = 0;  // root-menu index (1..4) of the section last opened; 0 = none yet
+
+    // Direct page entry without digit keys (gamepad): three digits, one of
+    // which is selected. Up/Down changes it, Left/Right moves, Confirm goes
+    // to the page, Back cancels. Opened by the PageEntry action (long-press Y).
+    struct PageEntry {
+        bool active = false;
+        int digits[3] = {1, 0, 0};
+        int position = 0;
+    };
+    PageEntry pageEntry_;
+
+    // True while playback is paused only because the app is in the background.
+    bool pausedBySuspend_ = false;
+
+    // Fractions carried between analog events (see InputEvent::value).
+    float volumeAccum_ = 0.0f;
+    float scrollAccum_ = 0.0f;
 
     // Set right before switching to Screen::Playing from a teletext play
     // link, so onPlaybackStopped() returns to that same teletext page (and
@@ -414,4 +473,7 @@ private:
     Menu rootMenu_;
     FileBrowser fileBrowser_;
     std::vector<std::string> mediaRoots_ = {"."};
+    // True when the roots were given on the command line (a deliberate
+    // multi-root setup), false when they are the platform's defaults.
+    bool mediaRootsExplicit_ = false;
 };

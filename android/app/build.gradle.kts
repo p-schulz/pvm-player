@@ -15,7 +15,7 @@ android {
 
     defaultConfig {
         applicationId = "app.pvmplayer"
-        minSdk = 29
+        minSdk = 30  // all-files access (MANAGE_EXTERNAL_STORAGE) exists from Android 11
         targetSdk = 36
         versionCode = 1
         versionName = "0.1"
@@ -41,9 +41,17 @@ android {
         prefab = true  // games-activity ships its native glue as a prefab package
     }
 
+    // The prebuilt libmpv (android/fetch_libmpv.sh), packaged as-is. Loaded
+    // through the DT_NEEDED entry of libpvm_player.so, so it only has to be
+    // in the APK's native library directory.
+    sourceSets["main"].jniLibs.srcDir(File(repoRoot, "thirdparty/libmpv-android/lib"))
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            // Not a Play Store build: signed with the debug key so the APK
+            // installs directly (sideloading), but optimized, unlike debug.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
@@ -77,6 +85,8 @@ val copyPvmAssets by tasks.registering(Copy::class) {
         include("news.cfg", "tagesschau.cfg", "ard.cfg", "zdf.cfg")
         rename { it.replace(".cfg", ".default.cfg") }
     }
+    // CA bundle for libmpv's https streams (fetched with libmpv itself).
+    from(File(repoRoot, "thirdparty/libmpv-android")) { include("cacert.pem") }
 }
 
 tasks.matching { it.name == "preBuild" || (it.name.startsWith("merge") && it.name.endsWith("Assets")) }

@@ -6,9 +6,32 @@
 #include <imgui.h>
 #include <imgui_impl_android.h>
 
+#include <android/input.h>
+
+#include <cstdio>
 #include <ctime>
+#include <fstream>
 
 #include "platform/android/keymap_android.h"
+
+namespace {
+
+// The default bindings plus the overrides in <dataDir>/keys.cfg, if any.
+input::KeyMap loadKeyMap(const std::string& dataDir) {
+    input::KeyMap map = input::android::defaultKeyMap();
+    const std::string path = dataDir + "/keys.cfg";
+    std::ifstream file(path);
+    if (!file) {
+        return map;  // optional; the defaults cover every action
+    }
+    for (const std::string& warning : map.loadOverrides(file, input::android::codeFromName, path)) {
+        std::fprintf(stderr, "%s\n", warning.c_str());
+    }
+    std::fprintf(stdout, "Loaded key bindings from %s\n", path.c_str());
+    return map;
+}
+
+}  // namespace
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "PVM", __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "PVM", __VA_ARGS__)
@@ -16,12 +39,16 @@
 AndroidPlatform::AndroidPlatform(android_app* app)
     : app_(app),
       dataDir_(app->activity->internalDataPath ? app->activity->internalDataPath : "."),
-      keyMap_(input::android::defaultKeyMap()) {
+      pad_(loadKeyMap(dataDir_), input::defaultAnalogBindings()) {
     // GameActivity's own JNIEnv is only valid on the Java main thread; this
     // (native) thread needs to be attached to the JVM to call into Java.
     if (app->activity->vm->AttachCurrentThread(&env_, nullptr) != JNI_OK) {
         LOGE("AttachCurrentThread failed; calls into Java are unavailable");
         env_ = nullptr;
+    }
+    cacheDir_ = activityString("cachePath");
+    if (cacheDir_.empty()) {
+        cacheDir_ = dataDir_ + "/cache";
     }
 }
 
@@ -140,16 +167,26 @@ void AndroidPlatform::destroyContext() {
     }
 }
 
-void AndroidPlatform::queueKeyEvent(int keyCode, int action, int repeatCount) {
-    const std::optional<input::Phase> phase = input::android::phaseFromKeyEvent(action, repeatCount);
-    if (!phase) {
-        return;
+void AndroidPlatform::queueKeyEvent(int keyCode, int action) {
+    if (action == AKEY_EVENT_ACTION_DOWN) {
+        pad_.keyDown(keyCode, now());  // the OS's own repeats are ignored inside
+    } else if (action == AKEY_EVENT_ACTION_UP) {
+        pad_.keyUp(keyCode, now());
     }
-    // One physical key may emit several actions; each screen reacts to at
-    // most one of them.
-    for (const input::Action a : keyMap_.actionsFor(keyCode)) {
-        pending_.push_back(input::InputEvent{a, *phase});
-    }
+}
+
+void AndroidPlatform::queueAxis(input::PadAxis axis, float value) {
+    pad_.setAxis(axis, value, now());
+}
+
+void AndroidPlatform::resetInput() {
+    pad_.releaseAll();
+    discardEvents();
+}
+
+void AndroidPlatform::discardEvents() {
+    std::vector<input::InputEvent> dropped;
+    pad_.drain(dropped);
 }
 
 double AndroidPlatform::now() const {
@@ -208,9 +245,10 @@ void AndroidPlatform::imguiShutdown() {
 }
 
 void AndroidPlatform::pollEvents(std::vector<input::InputEvent>& out) {
-    // The OS events themselves are pumped by android_main's loop.
-    out.insert(out.end(), pending_.begin(), pending_.end());
-    pending_.clear();
+    // The OS events themselves are pumped by android_main's loop; here the
+    // translator's timers (repeats, long presses, analog ticks) advance.
+    pad_.update(now());
+    pad_.drain(out);
 }
 
 bool AndroidPlatform::translateKeyName(std::string_view name, std::vector<input::InputEvent>& out) const {
@@ -218,8 +256,10 @@ bool AndroidPlatform::translateKeyName(std::string_view name, std::vector<input:
     if (!code) {
         return false;
     }
-    for (const input::Action action : keyMap_.actionsFor(*code)) {
-        out.push_back(input::InputEvent{action, input::Phase::Press});
+    // A key name stands for one press, so its actions share a group.
+    const uint32_t group = 0x80000000u | nextSimulatedGroup_++;
+    for (const input::Action action : pad_.keyMap().actionsFor(*code)) {
+        out.push_back(input::InputEvent{action, input::Phase::Press, 1.0f, group});
     }
     return true;
 }
@@ -249,6 +289,133 @@ void AndroidPlatform::setKeepAwake(bool on) {
         LOGE("keepScreenOn() failed");
     }
     env->DeleteLocalRef(activityClass);
+}
+
+namespace {
+
+std::string toString(JNIEnv* env, jstring value) {
+    if (!value) {
+        return {};
+    }
+    const char* chars = env->GetStringUTFChars(value, nullptr);
+    std::string result = chars ? chars : "";
+    if (chars) {
+        env->ReleaseStringUTFChars(value, chars);
+    }
+    return result;
+}
+
+// Clears (and reports) a pending Java exception; true if there was one.
+bool clearException(JNIEnv* env, const char* what) {
+    if (!env->ExceptionCheck()) {
+        return false;
+    }
+    env->ExceptionDescribe();
+    env->ExceptionClear();
+    LOGE("%s failed", what);
+    return true;
+}
+
+}  // namespace
+
+std::string AndroidPlatform::activityString(const char* method) const {
+    JNIEnv* env = env_;
+    if (!env) {
+        return {};
+    }
+    jobject activity = app_->activity->javaGameActivity;
+    jclass activityClass = env->GetObjectClass(activity);
+    std::string result;
+    if (jmethodID id = env->GetMethodID(activityClass, method, "()Ljava/lang/String;")) {
+        auto value = static_cast<jstring>(env->CallObjectMethod(activity, id));
+        if (!clearException(env, method)) {
+            result = toString(env, value);
+        }
+        if (value) env->DeleteLocalRef(value);
+    }
+    clearException(env, method);
+    env->DeleteLocalRef(activityClass);
+    return result;
+}
+
+std::vector<std::string> AndroidPlatform::activityStrings(const char* method) const {
+    JNIEnv* env = env_;
+    std::vector<std::string> result;
+    if (!env) {
+        return result;
+    }
+    jobject activity = app_->activity->javaGameActivity;
+    jclass activityClass = env->GetObjectClass(activity);
+    if (jmethodID id = env->GetMethodID(activityClass, method, "()[Ljava/lang/String;")) {
+        auto array = static_cast<jobjectArray>(env->CallObjectMethod(activity, id));
+        if (!clearException(env, method) && array) {
+            const jsize count = env->GetArrayLength(array);
+            for (jsize i = 0; i < count; ++i) {
+                auto value = static_cast<jstring>(env->GetObjectArrayElement(array, i));
+                result.push_back(toString(env, value));
+                if (value) env->DeleteLocalRef(value);
+            }
+        }
+        if (array) env->DeleteLocalRef(array);
+    }
+    clearException(env, method);
+    env->DeleteLocalRef(activityClass);
+    return result;
+}
+
+bool AndroidPlatform::activityBool(const char* method) const {
+    JNIEnv* env = env_;
+    if (!env) {
+        return false;
+    }
+    jobject activity = app_->activity->javaGameActivity;
+    jclass activityClass = env->GetObjectClass(activity);
+    bool result = false;
+    if (jmethodID id = env->GetMethodID(activityClass, method, "()Z")) {
+        const jboolean value = env->CallBooleanMethod(activity, id);
+        result = !clearException(env, method) && value == JNI_TRUE;
+    }
+    clearException(env, method);
+    env->DeleteLocalRef(activityClass);
+    return result;
+}
+
+void AndroidPlatform::activityVoid(const char* method) const {
+    JNIEnv* env = env_;
+    if (!env) {
+        return;
+    }
+    jobject activity = app_->activity->javaGameActivity;
+    jclass activityClass = env->GetObjectClass(activity);
+    if (jmethodID id = env->GetMethodID(activityClass, method, "()V")) {
+        env->CallVoidMethod(activity, id);
+    }
+    clearException(env, method);
+    env->DeleteLocalRef(activityClass);
+}
+
+std::vector<std::string> AndroidPlatform::displayNames() const {
+    std::vector<std::string> names = activityStrings("displayNames");
+    if (names.empty()) {
+        names.push_back("Primary");
+    }
+    return names;
+}
+
+std::vector<std::string> AndroidPlatform::defaultMediaRoots() const {
+    std::vector<std::string> roots = activityStrings("mediaRoots");
+    if (roots.empty()) {
+        roots.push_back("/storage/emulated/0");
+    }
+    return roots;
+}
+
+bool AndroidPlatform::storageAccessGranted() const {
+    return activityBool("hasStorageAccess");
+}
+
+void AndroidPlatform::requestStorageAccess() {
+    activityVoid("requestStorageAccess");
 }
 
 void AndroidPlatform::requestQuit() {

@@ -1,1 +1,16 @@
 .DS_Store
+
+# Android (Gradle) build output and local config
+/android/.gradle/
+/android/build/
+/android/app/build/
+/android/app/.cxx/
+/android/local.properties
+.idea/
+*.iml
+
+# Prebuilt libmpv, its headers and the CA bundle (android/fetch_libmpv.sh)
+/thirdparty/libmpv-android/
+
+# Built APKs for sideloading
+/dist/

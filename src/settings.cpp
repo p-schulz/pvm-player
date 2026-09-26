@@ -158,6 +158,10 @@ bool loadSettings(const std::string& path, AppSettings& settings) {
             ok = parseBool(value, settings.fullscreen);
         } else if (key == "monitor_index") {
             ok = parseInt(value, settings.monitorIndex);
+        } else if (key == "launch_on_top_screen") {
+            ok = parseBool(value, settings.launchOnTopScreen);
+        } else if (key == "hardware_decoding") {
+            ok = parseBool(value, settings.hardwareDecoding);
         } else {
             // Unknown key: ignored rather than treated as an error, so an
             // older config file still loads after new settings are added.
@@ -219,6 +223,8 @@ bool saveSettings(const std::string& path, const AppSettings& settings) {
     file << "aspect_override_index=" << settings.aspectOverrideIndex << "\n";
     file << "fullscreen=" << (settings.fullscreen ? "true" : "false") << "\n";
     file << "monitor_index=" << settings.monitorIndex << "\n";
+    file << "launch_on_top_screen=" << (settings.launchOnTopScreen ? "true" : "false") << "\n";
+    file << "hardware_decoding=" << (settings.hardwareDecoding ? "true" : "false") << "\n";
 
     return static_cast<bool>(file);
 }

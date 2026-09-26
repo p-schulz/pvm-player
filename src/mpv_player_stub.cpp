@@ -19,7 +19,7 @@ bool MpvPlayer::init(const Platform& /*platform*/) {
 
 void MpvPlayer::shutdown() {}
 
-bool MpvPlayer::loadFile(const std::string& path) {
+bool MpvPlayer::loadFile(const std::string& path, double /*startSeconds*/) {
     std::fprintf(stderr, "Cannot play %s: libmpv is not available in this build\n", path.c_str());
     return false;
 }
@@ -31,6 +31,20 @@ unsigned int MpvPlayer::render(int /*width*/, int /*height*/) {
 }
 
 void MpvPlayer::togglePause() {}
+
+void MpvPlayer::setPaused(bool /*paused*/) {}
+
+void MpvPlayer::setHardwareDecoding(bool /*enabled*/) {}
+
+void MpvPlayer::watchForStall() {}
+
+bool MpvPlayer::consumeHardwareDecodingFallback() {
+    return false;
+}
+
+std::string MpvPlayer::statsLine() const {
+    return {};
+}
 
 void MpvPlayer::seekRelative(double /*seconds*/) {}
 

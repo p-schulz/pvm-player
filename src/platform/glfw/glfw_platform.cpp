@@ -135,8 +135,9 @@ bool GlfwPlatform::translateKeyName(std::string_view name, std::vector<input::In
     if (!code) {
         return false;
     }
+    const uint32_t group = nextGroup_++;
     for (const input::Action action : keyMap_.actionsFor(*code)) {
-        out.push_back(input::InputEvent{action, input::Phase::Press});
+        out.push_back(input::InputEvent{action, input::Phase::Press, 1.0f, group});
     }
     return true;
 }
@@ -246,7 +247,8 @@ void GlfwPlatform::keyCallback(GLFWwindow* window, int key, int scancode, int ac
     }
     // One physical key may emit several actions (B = aspect ratio while
     // playing, blue on a teletext page); each screen reacts to at most one.
+    const uint32_t group = self->nextGroup_++;
     for (const input::Action a : self->keyMap_.actionsFor(input::glfw::inputCode(key, scancode))) {
-        self->pending_.push_back(input::InputEvent{a, *phase});
+        self->pending_.push_back(input::InputEvent{a, *phase, 1.0f, group});
     }
 }

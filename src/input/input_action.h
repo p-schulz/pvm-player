@@ -20,12 +20,16 @@ enum class Action : uint8_t {
     Confirm,   // activate the selection (Enter)
     Back,      // leave: close OSD, stop playback, leave a screen, quit at the root menu (Esc)
     BackSoft,  // go up a level, but never stop playback or quit (Backspace)
+    PageUp,    // move a list selection by a page (gamepad shoulder buttons)
+    PageDown,
+    ScrollUp,  // continuous scroll through a page's links; analog, see InputEvent::value
+    ScrollDown,
 
     // Playback
     PlayPause,
-    SeekBack,  // explicit seek; Left/Right also seek while playing
+    SeekBack,  // explicit seek, 10 s x value; Left/Right also seek (5 s) while playing
     SeekFwd,
-    VolumeDown,
+    VolumeDown,  // 5 points x value
     VolumeUp,
     ToggleOsd,    // in-playback OSD menu
     MediaInfo,    // media info overlay
@@ -34,12 +38,15 @@ enum class Action : uint8_t {
 
     // Global
     ToggleCrt,
+    OpenSettings,  // menus: open the settings screen (gamepad Start)
+    NextSection,   // teletext: cycle NEWS/TAGESSCHAU/ARD/ZDF; root menu: jump into the next one
 
     // Teletext colour keys
     FastextRed,     // previous page
     FastextGreen,   // next page
     FastextYellow,  // index page
     FastextBlue,    // refresh
+    PageEntry,      // open the page-number spinner (direct entry without digit keys)
 
     // Direct page entry
     Digit0,
@@ -64,7 +71,20 @@ enum class Phase : uint8_t { Press, Repeat, Release };
 struct InputEvent {
     Action action;
     Phase phase;
-    float value = 1.0f;  // analog magnitude (triggers, sticks); 1 for buttons
+    // Analog magnitude for actions driven by triggers and sticks; 1 for
+    // buttons. Handlers that take a continuous quantity scale by it (seek
+    // seconds, volume points) or accumulate it (scroll steps); the rate
+    // comes from the platform emitting Repeat events on a timer while the
+    // axis is deflected, so "speed proportional to depth" needs no extra state.
+    float value = 1.0f;
+
+    // Events produced by one physical press (a button bound to several
+    // actions, one per screen it means something on) share a non-zero group;
+    // 0 means "on its own". App uses it to apply such a press to the screen
+    // it was made on only: if the first action changes the screen (Confirm
+    // starting playback), the rest (the same button's Play/Pause) are not
+    // applied to the new one.
+    uint32_t group = 0;
 };
 
 constexpr int kActionCount = static_cast<int>(Action::Count);

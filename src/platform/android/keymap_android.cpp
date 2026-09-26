@@ -1,12 +1,13 @@
 #include "platform/android/keymap_android.h"
 
-#include <android/input.h>
 #include <android/keycodes.h>
 
 #include <cctype>
 #include <cstdlib>
 #include <string>
 #include <utility>
+
+#include "input/gamepad_input.h"
 
 namespace input::android {
 
@@ -37,15 +38,44 @@ constexpr std::pair<const char*, int> kNamedKeys[] = {
     {"HOME", AKEYCODE_MOVE_HOME},
     {"END", AKEYCODE_MOVE_END},
     {"BACK", AKEYCODE_BACK},
+    {"PAD_A", AKEYCODE_BUTTON_A},
+    {"PAD_B", AKEYCODE_BUTTON_B},
+    {"PAD_X", AKEYCODE_BUTTON_X},
+    {"PAD_Y", AKEYCODE_BUTTON_Y},
+    {"PAD_L1", AKEYCODE_BUTTON_L1},
+    {"PAD_R1", AKEYCODE_BUTTON_R1},
+    {"PAD_L2", AKEYCODE_BUTTON_L2},
+    {"PAD_R2", AKEYCODE_BUTTON_R2},
+    {"PAD_START", AKEYCODE_BUTTON_START},
+    {"PAD_SELECT", AKEYCODE_BUTTON_SELECT},
+    {"PAD_MODE", AKEYCODE_BUTTON_MODE},
+    {"PAD_THUMBL", AKEYCODE_BUTTON_THUMBL},
+    {"PAD_THUMBR", AKEYCODE_BUTTON_THUMBR},
     {"BUTTON_A", AKEYCODE_BUTTON_A},
     {"BUTTON_B", AKEYCODE_BUTTON_B},
     {"BUTTON_X", AKEYCODE_BUTTON_X},
     {"BUTTON_Y", AKEYCODE_BUTTON_Y},
     {"BUTTON_L1", AKEYCODE_BUTTON_L1},
     {"BUTTON_R1", AKEYCODE_BUTTON_R1},
+    {"BUTTON_L2", AKEYCODE_BUTTON_L2},
+    {"BUTTON_R2", AKEYCODE_BUTTON_R2},
     {"BUTTON_START", AKEYCODE_BUTTON_START},
     {"BUTTON_SELECT", AKEYCODE_BUTTON_SELECT},
+    {"HAT_UP", input::kHatUp},
+    {"HAT_DOWN", input::kHatDown},
+    {"HAT_LEFT", input::kHatLeft},
+    {"HAT_RIGHT", input::kHatRight},
+    {"LSTICK_UP", input::kLeftStickUp},
+    {"LSTICK_DOWN", input::kLeftStickDown},
+    {"LSTICK_LEFT", input::kLeftStickLeft},
+    {"LSTICK_RIGHT", input::kLeftStickRight},
     {"MEDIA_PLAY_PAUSE", AKEYCODE_MEDIA_PLAY_PAUSE},
+    {"MEDIA_PLAY", AKEYCODE_MEDIA_PLAY},
+    {"MEDIA_PAUSE", AKEYCODE_MEDIA_PAUSE},
+    {"MEDIA_NEXT", AKEYCODE_MEDIA_NEXT},
+    {"MEDIA_PREVIOUS", AKEYCODE_MEDIA_PREVIOUS},
+    {"MEDIA_FAST_FORWARD", AKEYCODE_MEDIA_FAST_FORWARD},
+    {"MEDIA_REWIND", AKEYCODE_MEDIA_REWIND},
 };
 
 std::string upper(std::string_view s) {
@@ -59,46 +89,63 @@ std::string upper(std::string_view s) {
 
 }  // namespace
 
-std::optional<Phase> phaseFromKeyEvent(int akeyAction, int repeatCount) {
-    switch (akeyAction) {
-        case AKEY_EVENT_ACTION_DOWN:
-            return repeatCount > 0 ? Phase::Repeat : Phase::Press;
-        case AKEY_EVENT_ACTION_UP:
-            return Phase::Release;
-        default:
-            return std::nullopt;
-    }
-}
-
 KeyMap defaultKeyMap() {
     KeyMap map;
 
-    // Handheld: D-pad and face buttons.
-    map.bind(AKEYCODE_DPAD_UP, Action::Up);
-    map.bind(AKEYCODE_DPAD_DOWN, Action::Down);
-    map.bind(AKEYCODE_DPAD_LEFT, Action::Left);
-    map.bind(AKEYCODE_DPAD_RIGHT, Action::Right);
+    // Handheld: D-pad (as keys, and as the hat axis some devices report it
+    // as) and the left stick.
+    for (const int code : {int(AKEYCODE_DPAD_UP), int(kHatUp), int(kLeftStickUp)}) map.bind(code, Action::Up);
+    for (const int code : {int(AKEYCODE_DPAD_DOWN), int(kHatDown), int(kLeftStickDown)}) map.bind(code, Action::Down);
+    for (const int code : {int(AKEYCODE_DPAD_LEFT), int(kHatLeft), int(kLeftStickLeft)}) map.bind(code, Action::Left);
+    for (const int code : {int(AKEYCODE_DPAD_RIGHT), int(kHatRight), int(kLeftStickRight)}) {
+        map.bind(code, Action::Right);
+    }
+
+    // Face buttons. Android names them by position in the Xbox layout; a
+    // device with Nintendo-style labels can swap A and B in keys.cfg.
     map.bind(AKEYCODE_BUTTON_A, Action::Confirm);
+    map.bind(AKEYCODE_BUTTON_A, Action::PlayPause);
     map.bind(AKEYCODE_DPAD_CENTER, Action::Confirm);
     map.bind(AKEYCODE_BUTTON_B, Action::Back);
     map.bind(AKEYCODE_BACK, Action::Back);
     map.bind(AKEYCODE_BUTTON_X, Action::ToggleCrt);
-    // Shoulders and Y follow the desktop pairing of playback and teletext
-    // actions (each screen reacts to only one of the two).
-    map.bind(AKEYCODE_BUTTON_L1, Action::SeekBack);
-    map.bind(AKEYCODE_BUTTON_R1, Action::SeekFwd);
-    map.bind(AKEYCODE_BUTTON_L1, Action::FastextRed);
-    map.bind(AKEYCODE_BUTTON_R1, Action::FastextGreen);
     map.bind(AKEYCODE_BUTTON_Y, Action::MediaInfo);
     map.bind(AKEYCODE_BUTTON_Y, Action::FastextYellow);
+    map.bind(AKEYCODE_BUTTON_Y | kHoldFlag, Action::PageEntry);
+
+    // Shoulders: page lists, seek while playing, red/green on teletext.
+    map.bind(AKEYCODE_BUTTON_L1, Action::PageUp);
+    map.bind(AKEYCODE_BUTTON_L1, Action::SeekBack);
+    map.bind(AKEYCODE_BUTTON_L1, Action::FastextRed);
+    map.bind(AKEYCODE_BUTTON_R1, Action::PageDown);
+    map.bind(AKEYCODE_BUTTON_R1, Action::SeekFwd);
+    map.bind(AKEYCODE_BUTTON_R1, Action::FastextGreen);
+
+    map.bind(AKEYCODE_BUTTON_START, Action::OpenSettings);
+    map.bind(AKEYCODE_BUTTON_START, Action::ToggleOsd);
     map.bind(AKEYCODE_BUTTON_START, Action::FastextBlue);
+    map.bind(AKEYCODE_BUTTON_SELECT, Action::NextSection);
+    map.bind(AKEYCODE_BUTTON_SELECT, Action::AspectRatio);
+    map.bind(AKEYCODE_BUTTON_THUMBR, Action::VideoScale);  // pillarbox / stretch / full width
+
+    // Media keys (a headset, a keyboard, the system's media buttons). The
+    // volume keys are deliberately not bound: they stay with the system.
     map.bind(AKEYCODE_MEDIA_PLAY_PAUSE, Action::PlayPause);
+    map.bind(AKEYCODE_MEDIA_PLAY, Action::PlayPause);
+    map.bind(AKEYCODE_MEDIA_PAUSE, Action::PlayPause);
+    map.bind(AKEYCODE_MEDIA_NEXT, Action::SeekFwd);
+    map.bind(AKEYCODE_MEDIA_FAST_FORWARD, Action::SeekFwd);
+    map.bind(AKEYCODE_MEDIA_PREVIOUS, Action::SeekBack);
+    map.bind(AKEYCODE_MEDIA_REWIND, Action::SeekBack);
 
     // Keyboard, mirroring the desktop defaults.
     map.bind(AKEYCODE_ENTER, Action::Confirm);
     map.bind(AKEYCODE_NUMPAD_ENTER, Action::Confirm);
     map.bind(AKEYCODE_ESCAPE, Action::Back);
     map.bind(AKEYCODE_DEL, Action::BackSoft);
+    map.bind(AKEYCODE_PAGE_UP, Action::PageUp);
+    map.bind(AKEYCODE_PAGE_DOWN, Action::PageDown);
+    map.bind(AKEYCODE_TAB, Action::NextSection);
     map.bind(AKEYCODE_SPACE, Action::PlayPause);
     map.bind(AKEYCODE_F, Action::PlayPause);
     map.bind(AKEYCODE_COMMA, Action::VolumeDown);
@@ -130,6 +177,13 @@ KeyMap defaultKeyMap() {
 
 std::optional<int> codeFromName(std::string_view rawName) {
     const std::string name = upper(rawName);
+    if (name.rfind("HOLD_", 0) == 0) {
+        const std::optional<int> base = codeFromName(name.substr(5));
+        if (!base || (*base & kHoldFlag)) {
+            return std::nullopt;
+        }
+        return *base | kHoldFlag;
+    }
     if (name.size() == 1) {
         const char c = name[0];
         if (c >= 'A' && c <= 'Z') return AKEYCODE_A + (c - 'A');

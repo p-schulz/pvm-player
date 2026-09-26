@@ -70,6 +70,7 @@ private:
     // Filled by the GLFW callbacks (and the macOS media-key tap) while
     // glfwPollEvents() runs; drained by pollEvents().
     std::vector<input::InputEvent> pending_;
+    mutable uint32_t nextGroup_ = 1;  // InputEvent::group: one per key event
 
     // Geometry to restore when leaving fullscreen: captured at window
     // creation and again whenever fullscreen is entered from a windowed

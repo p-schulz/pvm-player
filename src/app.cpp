@@ -260,6 +260,10 @@ bool extensionIn(const std::string& path, const std::vector<std::string>& extens
 // ceiling is a generous safety net far past any usable size, purely to
 // avoid an unbounded GPU texture allocation if a key is held down by
 // accident.
+// How far PageUp/PageDown move a list selection (menu rows visible at once
+// vary with font size; a fixed step keeps the buttons predictable).
+constexpr int kListPageSize = 10;
+
 constexpr int kFontSizeMin = 8;
 constexpr int kFontSizeSafetyCeiling = 200;
 constexpr int kFontSizeStep = 2;
@@ -282,6 +286,10 @@ const std::vector<std::string> kAspectRatioValues = {"no", "4:3", "5:4", "16:9",
 // letterbox/pillarbox), FILL (stretch to fill, distorting), CROP (uniform
 // zoom to fill, cropping overflow, no distortion). See App::renderFrame().
 const std::vector<std::string> kVideoScaleModeNames = {"FIT", "FILL", "CROP"};
+// The same three modes as the Settings screen names them: how a 4:3 picture
+// sits on a 16:9 screen -- black bars at the sides, stretched to fill, or
+// scaled to the full width with the top and bottom cropped.
+const std::vector<std::string> kVideoFrameNames = {"Pillarbox", "Stretch", "Full width"};
 
 // Shortens a long path for display in a settings row (the stored value
 // itself is never truncated) so a deeply nested directory doesn't blow up
@@ -313,6 +321,7 @@ bool App::init(Platform& platform) {
     // user edits and the app writes (config.cfg, *.cfg overrides, caches).
     const std::string assetDir = platform.assetDir();
     const std::string dataDir = platform.dataDir();
+    const std::string cacheDir = platform.cacheDir();
 
     if (std::vector<std::string> roots = platform.defaultMediaRoots(); !roots.empty()) {
         mediaRoots_ = std::move(roots);
@@ -373,6 +382,9 @@ bool App::init(Platform& platform) {
     loadedSettings.aspectOverrideIndex = aspectOverrideIndex_;
     loadedSettings.fullscreen = fullscreen_;
     loadedSettings.monitorIndex = monitorIndex_;
+    loadedSettings.launchOnTopScreen = launchOnTopScreen_;
+    hardwareDecoding_ = platform.defaultHardwareDecoding();
+    loadedSettings.hardwareDecoding = hardwareDecoding_;
     loadSettings(configPath_, loadedSettings);
 
     fontSizePx_ = std::clamp(loadedSettings.fontSizePx, kFontSizeMin, kFontSizeSafetyCeiling);
@@ -438,6 +450,9 @@ bool App::init(Platform& platform) {
     // window modes (they're hidden there but written back unchanged, so
     // config.cfg stays shareable across platforms); they only act where it does.
     fullscreen_ = loadedSettings.fullscreen;
+    launchOnTopScreen_ = loadedSettings.launchOnTopScreen;
+    hardwareDecoding_ = loadedSettings.hardwareDecoding;
+    mpv_.setHardwareDecoding(hardwareDecoding_);
     if (platform.supportsWindowModes()) {
         const int monitorChoiceCount = static_cast<int>(monitorChoiceNames_.size());
         monitorIndex_ = std::clamp(loadedSettings.monitorIndex, 0, monitorChoiceCount - 1);
@@ -482,10 +497,10 @@ bool App::init(Platform& platform) {
     imguiInitialized_ = true;
 
     rootMenu_.setItems({{"PLAY MEDIA"}, {"NEWS"}, {"TAGESSCHAU"}, {"ARD"}, {"ZDF"}, {"SETTINGS"}, {"EXIT"}});
-    initTeletextSection(newsSection_, dataDir, assetDir, "news", "PVM_NEWS_CONFIG");
-    initTeletextSection(tagesschauSection_, dataDir, assetDir, "tagesschau", "PVM_TAGESSCHAU_CONFIG");
-    initMvwSection(ardSection_, dataDir, assetDir, "ard", "PVM_ARD_CONFIG");
-    initMvwSection(zdfSection_, dataDir, assetDir, "zdf", "PVM_ZDF_CONFIG");
+    initTeletextSection(newsSection_, dataDir, assetDir, cacheDir, "news", "PVM_NEWS_CONFIG");
+    initTeletextSection(tagesschauSection_, dataDir, assetDir, cacheDir, "tagesschau", "PVM_TAGESSCHAU_CONFIG");
+    initMvwSection(ardSection_, dataDir, assetDir, cacheDir, "ard", "PVM_ARD_CONFIG");
+    initMvwSection(zdfSection_, dataDir, assetDir, cacheDir, "zdf", "PVM_ZDF_CONFIG");
 
     return true;
 }
@@ -493,6 +508,7 @@ bool App::init(Platform& platform) {
 void App::setMediaRoots(std::vector<std::string> paths) {
     if (!paths.empty()) {
         mediaRoots_ = std::move(paths);
+        mediaRootsExplicit_ = true;
     }
 }
 
@@ -602,11 +618,13 @@ void App::saveCurrentSettings() const {
     settings.aspectOverrideIndex = aspectOverrideIndex_;
     settings.fullscreen = fullscreen_;
     settings.monitorIndex = monitorIndex_;
+    settings.launchOnTopScreen = launchOnTopScreen_;
+    settings.hardwareDecoding = hardwareDecoding_;
     saveSettings(configPath_, settings);
 }
 
-bool App::loadMedia(const std::string& path) {
-    return mpv_.loadFile(path);
+bool App::loadMedia(const std::string& path, double startSeconds) {
+    return mpv_.loadFile(path, startSeconds);
 }
 
 void App::frame(const std::vector<input::InputEvent>& events) {
@@ -627,11 +645,26 @@ void App::frame(const std::vector<input::InputEvent>& events) {
                          current->size());
         }
         lastSnapshot_ = current.get();
+        // Once a second while playing: mpv's own view of how it is doing.
+        if (screen_ == Screen::Playing && frameCount_ % 60 == 0) {
+            std::fprintf(stdout, "[stats] playback %s\n", mpv_.statsLine().c_str());
+        }
     }
-    for (const input::InputEvent& event : events) {
-        handleInput(event);
-    }
+    dispatchEvents(events);
     mpv_.pollEvents();
+
+    if (screen_ == Screen::Playing) {
+        mpv_.watchForStall();
+        if (mpv_.consumeHardwareDecodingFallback()) {
+            // The player was replaced: it starts from defaults, so what the
+            // user had set goes back on, and hardware decoding stays off (a
+            // decoder that stalled once will do so on every file).
+            hardwareDecoding_ = false;
+            mpv_.setVolume(volume_);
+            mpv_.setAspectOverride(kAspectRatioValues[static_cast<size_t>(aspectOverrideIndex_)]);
+            saveCurrentSettings();
+        }
+    }
 
     if (screen_ == Screen::Playing && mpv_.consumeEndOfFile()) {
         onPlaybackStopped();
@@ -709,7 +742,25 @@ void App::injectSimulatedKey(const std::string& token) {
         }
         events.push_back(input::InputEvent{*action, input::Phase::Press});
     }
+    dispatchEvents(events);
+}
+
+int App::inputContext() const {
+    return static_cast<int>(screen_) | (osdMenuVisible_ ? 0x100 : 0) | (pageEntry_.active ? 0x200 : 0);
+}
+
+void App::dispatchEvents(const std::vector<input::InputEvent>& events) {
+    uint32_t group = 0;
+    int groupContext = 0;
     for (const input::InputEvent& event : events) {
+        if (event.group != 0 && event.group == group) {
+            if (inputContext() != groupContext) {
+                continue;  // this press already did its thing on the screen it was made on
+            }
+        } else {
+            group = event.group;
+            groupContext = inputContext();
+        }
         handleInput(event);
     }
 }
@@ -929,6 +980,12 @@ void App::renderPlaybackHud() {
                           formatTimestamp(mpv_.durationSeconds()).c_str());
             drawOutlinedText(timeLine);
             drawOutlinedText(mpv_.isPaused() ? "PAUSED" : "PLAYING");
+            // Which decoder is in use: hardware ("mediacodec-copy") or "no"
+            // for software -- worth seeing when playback stutters.
+            if (!mpv_.hwdecCurrent().empty()) {
+                drawOutlinedTextDisabled("DECODER: " + (mpv_.hwdecCurrent() == "no" ? std::string("SOFTWARE")
+                                                                                     : mpv_.hwdecCurrent()));
+            }
         }
 
         ImGui::End();
@@ -1487,6 +1544,9 @@ std::vector<App::SettingsRowDesc> App::buildSettingsRows() {
         };
         rows.push_back(monitorRow);
     }
+    if (platform_->hasLaunchDisplaySetting()) {
+        rows.push_back(boolRow("Launch On Top Screen", &launchOnTopScreen_, "ON", "OFF"));
+    }
 
     SettingsRowDesc fontSizeRow =
         intRow("Font Size", &fontSizePx_, kFontSizeMin, kFontSizeSafetyCeiling, kFontSizeStep, " px");
@@ -1579,6 +1639,31 @@ std::vector<App::SettingsRowDesc> App::buildSettingsRows() {
     rows.push_back(floatRow("Brightness", &brightness_, -0.5f, 0.5f, 0.05f));
     rows.push_back(floatRow("Contrast", &contrast_, 0.0f, 2.0f, 0.05f));
     rows.push_back(floatRow("Saturation", &saturation_, 0.0f, 2.0f, 0.05f));
+
+    // How playback sits on the screen (also in the playback OSD and on the
+    // V/B keys): the same variables, so a change here is what those show.
+    SettingsRowDesc videoFrameRow;
+    videoFrameRow.type = SettingsRowType::Enum;
+    videoFrameRow.label = "Video Frame";
+    videoFrameRow.enumPtr = &videoScaleModeIndex_;
+    videoFrameRow.enumNames = &kVideoFrameNames;
+    rows.push_back(videoFrameRow);
+
+    SettingsRowDesc videoAspectRow;
+    videoAspectRow.type = SettingsRowType::Enum;
+    videoAspectRow.label = "Video Aspect";
+    videoAspectRow.enumPtr = &aspectOverrideIndex_;
+    videoAspectRow.enumNames = &kAspectRatioNames;
+    videoAspectRow.onEnumChanged = [this]() {
+        mpv_.setAspectOverride(kAspectRatioValues[static_cast<size_t>(aspectOverrideIndex_)]);
+    };
+    rows.push_back(videoAspectRow);
+
+    // Applies from the next file; the media info overlay shows which decoder
+    // a file actually got.
+    SettingsRowDesc hwdecRow = boolRow("HW Decoding (exp.)", &hardwareDecoding_, "ON", "OFF");
+    hwdecRow.onBoolChanged = [this]() { mpv_.setHardwareDecoding(hardwareDecoding_); };
+    rows.push_back(hwdecRow);
 
     rows.push_back(boolRow("CRT Effect", &crtEnabled_, "ON", "OFF"));
     rows.push_back(floatRow("Effect Strength", &crtEffectStrength_, 0.0f, 2.0f, 0.1f));
@@ -1755,6 +1840,12 @@ void App::adjustSettingsRow(SettingsRowDesc& row, int direction) {
 void App::activateRootMenuItem(int index) {
     switch (index) {
         case 0:  // Play Media
+            // Without storage access every folder would just look empty:
+            // ask (a system screen) instead, and come back to this menu.
+            if (!platform_->storageAccessGranted()) {
+                platform_->requestStorageAccess();
+                break;
+            }
             enterFileBrowser(mergedExtensions());
             break;
         case 1:  // News
@@ -1776,14 +1867,14 @@ void App::activateRootMenuItem(int index) {
 }
 
 void App::enterFileBrowser(std::vector<std::string> extensions) {
-    // The configurable start/last-used directory only makes sense for the
-    // common single-root case; an explicit multi-root launch (argv) is a
-    // deliberate dev/CLI configuration and keeps showing its roots picker
-    // unchanged. lastUsedDirectory_ (where playback last stopped) takes
-    // priority over startDirectory_ (the configured default) so "Play
-    // Media" resumes where the user left off.
+    // The configurable start/last-used directory applies to the platform's
+    // own roots (however many) and to the single-root case; an explicit
+    // multi-root launch (argv) is a deliberate dev/CLI configuration and
+    // keeps showing its roots picker unchanged. lastUsedDirectory_ (where
+    // playback last stopped) takes priority over startDirectory_ (the
+    // configured default) so "Play Media" resumes where the user left off.
     std::vector<std::string> roots = mediaRoots_;
-    if (mediaRoots_.size() <= 1) {
+    if (!mediaRootsExplicit_ || mediaRoots_.size() <= 1) {
         if (!lastUsedDirectory_.empty()) {
             roots = {lastUsedDirectory_};
         } else if (!startDirectory_.empty()) {
@@ -1798,6 +1889,9 @@ void App::handleInput(const input::InputEvent& event) {
     using input::Action;
 
     if (event.phase == input::Phase::Release) {
+        // An analog input that has let go starts its next deflection fresh.
+        volumeAccum_ = 0.0f;
+        scrollAccum_ = 0.0f;
         return;
     }
     const Action action = event.action;
@@ -1831,8 +1925,19 @@ void App::handleInput(const input::InputEvent& event) {
                     }
                     break;
                 case Action::Back:
-                    if (pressed) {
+                    if (pressed && platform_->backQuitsAtRootMenu()) {
                         platform_->requestQuit();
+                    }
+                    break;
+                case Action::OpenSettings:
+                    if (pressed) {
+                        settingsSelectedRow_ = 0;
+                        screen_ = Screen::Settings;
+                    }
+                    break;
+                case Action::NextSection:
+                    if (pressed) {
+                        openTeletext(nextSectionIndex());
                     }
                     break;
                 default:
@@ -1847,6 +1952,18 @@ void App::handleInput(const input::InputEvent& event) {
                     break;
                 case Action::Down:
                     fileBrowser_.moveDown();
+                    break;
+                case Action::PageUp:
+                    fileBrowser_.moveBy(-kListPageSize);
+                    break;
+                case Action::PageDown:
+                    fileBrowser_.moveBy(kListPageSize);
+                    break;
+                case Action::OpenSettings:
+                    if (pressed) {
+                        settingsSelectedRow_ = 0;
+                        screen_ = Screen::Settings;
+                    }
                     break;
                 case Action::Confirm:
                     if (pressed && !fileBrowser_.empty()) {
@@ -1885,6 +2002,12 @@ void App::handleInput(const input::InputEvent& event) {
                 case Action::Down:
                     settingsSelectedRow_ = std::min(rowCount - 1, settingsSelectedRow_ + 1);
                     break;
+                case Action::PageUp:
+                    settingsSelectedRow_ = std::max(0, settingsSelectedRow_ - kListPageSize);
+                    break;
+                case Action::PageDown:
+                    settingsSelectedRow_ = std::min(rowCount - 1, settingsSelectedRow_ + kListPageSize);
+                    break;
                 case Action::Left:
                 case Action::Right:
                     if (settingsSelectedRow_ >= 0 && settingsSelectedRow_ < rowCount) {
@@ -1920,6 +2043,12 @@ void App::handleInput(const input::InputEvent& event) {
                     break;
                 case Action::Down:
                     fileBrowser_.moveDown();
+                    break;
+                case Action::PageUp:
+                    fileBrowser_.moveBy(-kListPageSize);
+                    break;
+                case Action::PageDown:
+                    fileBrowser_.moveBy(kListPageSize);
                     break;
                 case Action::Confirm:
                     if (pressed && !fileBrowser_.empty()) {
@@ -2004,13 +2133,20 @@ void App::handleInput(const input::InputEvent& event) {
                         mpv_.togglePause();
                     }
                     break;
+                // The D-pad steps 5 s; the dedicated seek actions (shoulder
+                // buttons, analog triggers, media keys) are 10 s x value, so a
+                // half-pulled trigger seeks at half speed.
                 case Action::Left:
-                case Action::SeekBack:
                     mpv_.seekRelative(-5.0);
                     break;
                 case Action::Right:
-                case Action::SeekFwd:
                     mpv_.seekRelative(5.0);
+                    break;
+                case Action::SeekBack:
+                    mpv_.seekRelative(-10.0 * event.value);
+                    break;
+                case Action::SeekFwd:
+                    mpv_.seekRelative(10.0 * event.value);
                     break;
                 case Action::VideoScale:
                     if (pressed) {
@@ -2036,12 +2172,15 @@ void App::handleInput(const input::InputEvent& event) {
                         mediaInfoVisible_ = !mediaInfoVisible_;
                     }
                     break;
-                case Action::VolumeDown:
+                // Up/Down (D-pad, left stick) and the volume actions all set
+                // the volume, 5 points x value per event.
+                case Action::Up:
                 case Action::VolumeUp:
-                    volume_ = std::clamp(volume_ + (action == Action::VolumeUp ? 5 : -5), 0, 100);
-                    mpv_.setVolume(volume_);
-                    volumeIndicatorHideAtTime_ = platform_->now() + 2.0;
-                    saveCurrentSettings();
+                    adjustVolume(5.0f * event.value);
+                    break;
+                case Action::Down:
+                case Action::VolumeDown:
+                    adjustVolume(-5.0f * event.value);
                     break;
                 case Action::Back:
                     if (pressed) {
@@ -2077,6 +2216,11 @@ void App::handleTeletextInput(const input::InputEvent& event) {
     const int linkCount = page ? static_cast<int>(page->links.size()) : 0;
     const bool pressed = event.phase == input::Phase::Press;
 
+    if (pageEntry_.active) {
+        handlePageEntryInput(event);
+        return;
+    }
+
     if (const int digit = input::digitOf(event.action); digit >= 0) {
         if (pressed) {
             nav.digit(digit, platform_->now());
@@ -2090,6 +2234,26 @@ void App::handleTeletextInput(const input::InputEvent& event) {
             break;
         case Action::Down:
             nav.selectLink(1, linkCount);
+            break;
+        // Analog scroll (right stick): the selection moves one link per
+        // accumulated unit of deflection, so a gentle push steps slowly.
+        case Action::ScrollUp:
+        case Action::ScrollDown:
+            scrollAccum_ += event.action == Action::ScrollDown ? event.value : -event.value;
+            while (scrollAccum_ >= 1.0f) {
+                nav.selectLink(1, linkCount);
+                scrollAccum_ -= 1.0f;
+            }
+            while (scrollAccum_ <= -1.0f) {
+                nav.selectLink(-1, linkCount);
+                scrollAccum_ += 1.0f;
+            }
+            break;
+        case Action::NextSection:
+            if (pressed) openTeletext(nextSectionIndex());
+            break;
+        case Action::PageEntry:
+            if (pressed) openPageEntry();
             break;
         case Action::Left:
         case Action::FastextRed:
@@ -2140,10 +2304,10 @@ void App::activateTeletextSelection() {
 
 // Loads the section's config (<baseName>.cfg from dataDir, else the shipped
 // <baseName>.default.cfg from assetDir; the environment variable `envVar`
-// overrides both) and starts its service, caching under dataDir/cache. With no usable config the section still works:
+// overrides both) and starts its service, caching under cacheDir/<baseName>. With no usable config the section still works:
 // page 100 says no sources are configured.
 void App::initTeletextSection(TeletextSection& section, const std::string& dataDir, const std::string& assetDir,
-                              const std::string& baseName, const char* envVar) {
+                              const std::string& cacheDir, const std::string& baseName, const char* envVar) {
     teletext::NewsConfig config;
     std::vector<std::string> warnings;
 
@@ -2165,7 +2329,7 @@ void App::initTeletextSection(TeletextSection& section, const std::string& dataD
 
     // Cached pages are loaded (and published) right here in the constructor;
     // the live refresh then runs on the service's own thread.
-    auto service = std::make_unique<teletext::NewsService>(std::move(config), dataDir + "/cache/" + baseName);
+    auto service = std::make_unique<teletext::NewsService>(std::move(config), cacheDir + "/" + baseName);
     if (const char* env = std::getenv("PVM_TEST_NEWS_REFRESH_SECONDS")) {
         service->setRefreshIntervalSecondsForTesting(std::atoi(env));
     }
@@ -2177,7 +2341,7 @@ void App::initTeletextSection(TeletextSection& section, const std::string& dataD
 // section's own config shape (a channel, favorites and the generated A-Z
 // window, see teletext/mvw_config.h) and service (teletext/mvw_service.h).
 void App::initMvwSection(TeletextSection& section, const std::string& dataDir, const std::string& assetDir,
-                         const std::string& baseName, const char* envVar) {
+                         const std::string& cacheDir, const std::string& baseName, const char* envVar) {
     teletext::MvwConfig config;
     std::vector<std::string> warnings;
 
@@ -2197,7 +2361,7 @@ void App::initMvwSection(TeletextSection& section, const std::string& dataDir, c
         std::fprintf(stderr, "[%s] %s\n", baseName.c_str(), w.c_str());
     }
 
-    auto service = std::make_unique<teletext::MvwService>(std::move(config), dataDir + "/cache/" + baseName);
+    auto service = std::make_unique<teletext::MvwService>(std::move(config), cacheDir + "/" + baseName);
     if (const char* env = std::getenv("PVM_TEST_NEWS_REFRESH_SECONDS")) {
         service->setRefreshIntervalSecondsForTesting(std::atoi(env));
     }
@@ -2221,10 +2385,190 @@ void App::openTeletext(int rootMenuIndex) {
             break;
         default:
             activeTeletext_ = &newsSection_;
+            rootMenuIndex = 1;
             break;
     }
+    lastSectionMenuIndex_ = rootMenuIndex;
+    pageEntry_.active = false;
     activeTeletext_->nav.goTo(teletext::kIndexPage);
     screen_ = Screen::News;
+}
+
+void App::setSuspended(bool suspended) {
+    if (suspended) {
+        // Audio in the background is out of scope: pause what is playing, and
+        // remember that it was us, so a resume doesn't start something the
+        // user had paused.
+        if (screen_ == Screen::Playing && !mpv_.isPaused()) {
+            mpv_.setPaused(true);
+            pausedBySuspend_ = true;
+        }
+    } else if (pausedBySuspend_) {
+        pausedBySuspend_ = false;
+        mpv_.setPaused(false);
+    }
+}
+
+App::PlaybackSnapshot App::snapshotPlayback() const {
+    PlaybackSnapshot snapshot;
+    if (screen_ == Screen::Playing && !mpv_.filename().empty()) {
+        snapshot.valid = true;
+        snapshot.path = mpv_.filename();
+        snapshot.positionSeconds = mpv_.timePositionSeconds();
+        snapshot.paused = mpv_.isPaused() && !pausedBySuspend_;
+        snapshot.title = playbackTitleOverride_;
+        snapshot.fromTeletext = cameFromTeletext_;
+        snapshot.mediaKind = static_cast<int>(currentMediaKind_);
+    }
+    return snapshot;
+}
+
+void App::restorePlayback(const PlaybackSnapshot& snapshot) {
+    if (!snapshot.valid || !loadMedia(snapshot.path, snapshot.positionSeconds)) {
+        return;
+    }
+    currentMediaKind_ = static_cast<MediaKind>(snapshot.mediaKind);
+    playbackTitleOverride_ = snapshot.title;
+    cameFromTeletext_ = snapshot.fromTeletext;
+    screen_ = Screen::Playing;
+    if (snapshot.paused) {
+        mpv_.setPaused(true);
+    }
+}
+
+int App::nextSectionIndex() const {
+    return lastSectionMenuIndex_ % 4 + 1;  // 0 (none yet) -> NEWS; ZDF wraps to NEWS
+}
+
+void App::adjustVolume(float points) {
+    volumeAccum_ += points;
+    const int whole = static_cast<int>(volumeAccum_);  // toward zero
+    if (whole == 0) {
+        return;
+    }
+    volumeAccum_ -= static_cast<float>(whole);
+    const int before = volume_;
+    volume_ = std::clamp(volume_ + whole, 0, 100);
+    mpv_.setVolume(volume_);
+    volumeIndicatorHideAtTime_ = platform_->now() + 2.0;
+    if (volume_ != before) {
+        saveCurrentSettings();
+    }
+}
+
+void App::openPageEntry() {
+    teletext::Navigator& nav = activeTeletext_->nav;
+    nav.cancelEntry();  // a half-typed number and the spinner would fight over the target
+    const int page = std::clamp(nav.currentPage(), teletext::kMinPage, teletext::kMaxPage);
+    pageEntry_.active = true;
+    pageEntry_.digits[0] = page / 100;
+    pageEntry_.digits[1] = page / 10 % 10;
+    pageEntry_.digits[2] = page % 10;
+    pageEntry_.position = 0;
+}
+
+void App::handlePageEntryInput(const input::InputEvent& event) {
+    using input::Action;
+    PageEntry& entry = pageEntry_;
+    const bool pressed = event.phase == input::Phase::Press;
+
+    // Page numbers run 100-999, so the first digit is 1-9; the others 0-9.
+    auto step = [&](int direction) {
+        const int lowest = entry.position == 0 ? 1 : 0;
+        const int span = 10 - lowest;
+        int& digit = entry.digits[entry.position];
+        digit = lowest + ((digit - lowest + direction) % span + span) % span;
+    };
+
+    if (const int digit = input::digitOf(event.action); digit >= 0) {
+        if (pressed && !(entry.position == 0 && digit == 0)) {
+            entry.digits[entry.position] = digit;
+            entry.position = std::min(2, entry.position + 1);
+        }
+        return;
+    }
+    switch (event.action) {
+        case Action::Up:
+            step(+1);
+            break;
+        case Action::Down:
+            step(-1);
+            break;
+        case Action::Left:
+            entry.position = std::max(0, entry.position - 1);
+            break;
+        case Action::Right:
+            entry.position = std::min(2, entry.position + 1);
+            break;
+        case Action::Confirm:
+            if (pressed) {
+                activeTeletext_->nav.goTo(entry.digits[0] * 100 + entry.digits[1] * 10 + entry.digits[2]);
+                entry.active = false;
+            }
+            break;
+        case Action::Back:
+        case Action::BackSoft:
+            if (pressed) {
+                entry.active = false;
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+// The spinner as an overlay on the teletext page: "PAGE", three digit cells
+// (the selected one in reverse video) and a one-line hint.
+void App::renderPageEntry() {
+    if (!pageEntry_.active) {
+        return;
+    }
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    ImFont* font = ImGui::GetFont();
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+
+    const float cell = display.y * 0.11f;
+    const float gap = cell * 0.25f;
+    const float pad = cell * 0.35f;
+    const float titleSize = cell * 0.4f;
+    const float digitSize = cell * 0.8f;
+    const float hintSize = cell * 0.3f;
+    const char* hint = "UP/DOWN: digit   LEFT/RIGHT: move   CONFIRM: go   BACK: cancel";
+
+    const float digitsWidth = 3.0f * cell + 2.0f * gap;
+    const ImVec2 hintExtent = font->CalcTextSizeA(hintSize, FLT_MAX, 0.0f, hint);
+    const float innerWidth = std::max(digitsWidth, hintExtent.x);
+    const float innerHeight = titleSize + gap + cell + gap + hintSize;
+    const ImVec2 innerMin(display.x * 0.5f - innerWidth * 0.5f, display.y * 0.5f - innerHeight * 0.5f);
+
+    draw->AddRectFilled(ImVec2(innerMin.x - pad, innerMin.y - pad),
+                        ImVec2(innerMin.x + innerWidth + pad, innerMin.y + innerHeight + pad), IM_COL32(0, 0, 0, 255));
+    draw->AddRect(ImVec2(innerMin.x - pad, innerMin.y - pad),
+                  ImVec2(innerMin.x + innerWidth + pad, innerMin.y + innerHeight + pad), IM_COL32(255, 255, 0, 255),
+                  0.0f, 0, 2.0f);
+
+    const ImU32 yellow = IM_COL32(255, 255, 0, 255);
+    const ImU32 blue = IM_COL32(0, 0, 255, 255);
+    const ImU32 black = IM_COL32(0, 0, 0, 255);
+
+    auto centered = [&](const char* text, float size, float centerX, float top, ImU32 color) {
+        const ImVec2 extent = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+        draw->AddText(font, size, ImVec2(centerX - extent.x * 0.5f, top), color, text);
+    };
+
+    const float centerX = display.x * 0.5f;
+    centered("PAGE", titleSize, centerX, innerMin.y, yellow);
+    const float digitsTop = innerMin.y + titleSize + gap;
+    const float digitsLeft = centerX - digitsWidth * 0.5f;
+    for (int i = 0; i < 3; ++i) {
+        const float left = digitsLeft + static_cast<float>(i) * (cell + gap);
+        const bool selected = i == pageEntry_.position;
+        draw->AddRectFilled(ImVec2(left, digitsTop), ImVec2(left + cell, digitsTop + cell), selected ? yellow : blue);
+        char digit[2] = {static_cast<char>('0' + pageEntry_.digits[i]), '\0'};
+        centered(digit, digitSize, left + cell * 0.5f, digitsTop + (cell - digitSize) * 0.5f,
+                 selected ? black : yellow);
+    }
+    centered(hint, hintSize, centerX, digitsTop + cell + gap, IM_COL32(0, 255, 255, 255));
 }
 
 void App::renderTeletext() {
@@ -2247,6 +2591,7 @@ void App::renderTeletext() {
                        teletext::formatLocalTime(now, "%H:%M:%S"),
                        {teletextMenuScaleX_, teletextMenuScaleY_, teletextTextScaleX_, teletextTextScaleY_},
                        selectedLink);
+    renderPageEntry();
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());

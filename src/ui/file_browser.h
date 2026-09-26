@@ -40,6 +40,8 @@ public:
 
     void moveUp();
     void moveDown();
+    // Moves the selection by `delta` entries (a page up/down), clamped to the list.
+    void moveBy(int delta);
 
     // Descends into the selected entry if it's a directory. No-op otherwise.
     void enterSelectedDirectory();

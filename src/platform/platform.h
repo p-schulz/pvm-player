@@ -59,8 +59,19 @@ public:
     // Where the shipped read-only files live: shaders/, assets/ and the
     // *.default.cfg files (no trailing slash).
     virtual std::string assetDir() const = 0;
+    // Where the teletext and Mediathek page caches live (no trailing slash).
+    // The OS may clear it at any time, which the services tolerate; on
+    // desktop it is a subfolder of dataDir().
+    virtual std::string cacheDir() const { return dataDir() + "/cache"; }
     // Media folders to browse when none were given explicitly.
     virtual std::vector<std::string> defaultMediaRoots() const = 0;
+
+    // Whether the app may read the user's media folders. Always true on
+    // desktop; on Android it is the "all files access" permission, which the
+    // user grants in a system settings screen.
+    virtual bool storageAccessGranted() const { return true; }
+    // Opens that system screen (no-op where there is nothing to ask for).
+    virtual void requestStorageAccess() {}
 
     // --- Lifecycle and power ---------------------------------------------
     // Keeps the display from idle-sleeping while true (called every frame
@@ -69,6 +80,10 @@ public:
     virtual void setKeepAwake(bool on) = 0;
     virtual void requestQuit() = 0;
     virtual bool quitRequested() const = 0;
+    // Whether Back on the root menu quits the app. Desktop yes (Esc); on a
+    // handheld it is ignored -- B is pressed constantly while backing out of
+    // screens, and the menu's EXIT entry (or Home) leaves deliberately.
+    virtual bool backQuitsAtRootMenu() const { return true; }
 
     // --- Display --------------------------------------------------------
     // False where the app always fills one fixed display (Android): the
@@ -78,4 +93,12 @@ public:
     // ("Primary"), 1..N specific displays.
     virtual std::vector<std::string> displayNames() const = 0;
     virtual void setFullscreen(bool on, int displayIndex) = 0;
+    // Whether the platform can start the app on a display other than the one
+    // the user should see it on (a dual-screen handheld), and so has a
+    // "launch on the top screen" preference to offer. See App's
+    // launchOnTopScreen_; the platform's launcher reads the saved value.
+    virtual bool hasLaunchDisplaySetting() const { return false; }
+    // Whether video is hardware-decoded unless the user changes it
+    // (Settings > Hardware Decoding). Off everywhere for now.
+    virtual bool defaultHardwareDecoding() const { return false; }
 };

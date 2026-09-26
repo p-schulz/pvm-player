@@ -8,13 +8,15 @@ namespace input {
 
 namespace {
 
+// Same order as Action.
 constexpr std::array<const char*, kActionCount> kNames = {
-    "up",           "down",          "left",           "right",       "confirm",     "back",
-    "back_soft",    "play_pause",    "seek_back",      "seek_fwd",    "volume_down", "volume_up",
-    "toggle_osd",   "media_info",    "video_scale",    "aspect_ratio", "toggle_crt",  "fastext_red",
-    "fastext_green", "fastext_yellow", "fastext_blue", "digit_0",     "digit_1",     "digit_2",
-    "digit_3",      "digit_4",       "digit_5",        "digit_6",     "digit_7",     "digit_8",
-    "digit_9",
+    "up",           "down",          "left",          "right",        "confirm",       "back",
+    "back_soft",    "page_up",       "page_down",     "scroll_up",    "scroll_down",   "play_pause",
+    "seek_back",    "seek_fwd",      "volume_down",   "volume_up",    "toggle_osd",    "media_info",
+    "video_scale",  "aspect_ratio",  "toggle_crt",    "open_settings", "next_section",  "fastext_red",
+    "fastext_green", "fastext_yellow", "fastext_blue", "page_entry",  "digit_0",       "digit_1",
+    "digit_2",      "digit_3",       "digit_4",       "digit_5",      "digit_6",       "digit_7",
+    "digit_8",      "digit_9",
 };
 
 std::string normalize(std::string_view name) {

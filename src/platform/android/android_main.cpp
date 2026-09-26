@@ -3,6 +3,7 @@
 // activity's event loop and renders a frame per iteration while a window
 // exists and the activity is resumed.
 
+#include <android/input.h>
 #include <android/keycodes.h>
 #include <android/log.h>
 #include <game-activity/GameActivity.h>
@@ -10,6 +11,7 @@
 
 #include <unistd.h>
 
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -19,6 +21,7 @@
 #include <vector>
 
 #include "app.h"
+#include "input/gamepad_input.h"
 #include "platform/android/android_platform.h"
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "PVM", __VA_ARGS__)
@@ -49,13 +52,21 @@ struct Session {
     }
 
     // The GL context is gone for good: drop everything that lived in it and
-    // start over on a fresh one.
+    // start over on a fresh one, picking playback up where it was (the file
+    // and position are all mpv needs; its render context died with the GL one).
     void recoverFromContextLoss() {
         LOGI("Rebuilding after EGL context loss");
+        App::PlaybackSnapshot playback;
+        if (pvm) {
+            playback = pvm->snapshotPlayback();
+        }
         pvm.reset();
         platform->destroyContext();
-        if (platform->attachWindow()) {
-            startApp();
+        if (platform->attachWindow() && startApp()) {
+            pvm->restorePlayback(playback);
+            if (playback.valid) {
+                LOGI("Resumed %s at %.1f s", playback.path.c_str(), playback.positionSeconds);
+            }
         }
     }
 };
@@ -74,14 +85,27 @@ void onAppCmd(android_app* app, int32_t cmd) {
         case APP_CMD_TERM_WINDOW:
             LOGI("window destroyed");
             session->platform->detachWindow();
+            session->platform->resetInput();
             break;
         case APP_CMD_RESUME:
             LOGI("resumed");
             session->resumed = true;
+            if (session->pvm) {
+                session->pvm->setSuspended(false);
+            }
             break;
         case APP_CMD_PAUSE:
             LOGI("paused");
             session->resumed = false;
+            session->platform->resetInput();
+            if (session->pvm) {
+                session->pvm->setSuspended(true);
+            }
+            break;
+        case APP_CMD_LOST_FOCUS:
+            // A dialog or the notification shade took the focus: the
+            // buttons still held will not report their release.
+            session->platform->resetInput();
             break;
         default:
             break;
@@ -146,6 +170,47 @@ void loadTestEnvironment(const std::string& dataDir) {
     }
 }
 
+// Joystick and D-pad motion events are ours (the default filter only lets
+// touch through, and touch has no UI here).
+bool motionEventFilter(const GameActivityMotionEvent* event) {
+    return (event->source & AINPUT_SOURCE_CLASS_MASK) == AINPUT_SOURCE_CLASS_JOYSTICK;
+}
+
+// GameActivity only delivers X and Y unless the other axes are enabled.
+void enableGamepadAxes() {
+    for (const int32_t axis : {AMOTION_EVENT_AXIS_Z, AMOTION_EVENT_AXIS_RZ, AMOTION_EVENT_AXIS_RX,
+                               AMOTION_EVENT_AXIS_RY, AMOTION_EVENT_AXIS_HAT_X, AMOTION_EVENT_AXIS_HAT_Y,
+                               AMOTION_EVENT_AXIS_LTRIGGER, AMOTION_EVENT_AXIS_RTRIGGER, AMOTION_EVENT_AXIS_BRAKE,
+                               AMOTION_EVENT_AXIS_GAS}) {
+        GameActivityPointerAxes_enableAxis(axis);
+    }
+}
+
+// One joystick motion event -> the platform-neutral axes. Devices differ in
+// where they put the right stick (Z/RZ or RX/RY) and the triggers (LTRIGGER/
+// RTRIGGER or BRAKE/GAS); the alternatives sit at 0 when unused, so taking
+// whichever is larger in magnitude covers both.
+void handleMotion(Session& session, const GameActivityMotionEvent& event) {
+    if (event.pointerCount == 0) {
+        return;
+    }
+    const GameActivityPointerAxes& pointer = event.pointers[0];
+    auto value = [&](int32_t axis) { return GameActivityPointerAxes_getAxisValue(&pointer, axis); };
+    auto dominant = [](float a, float b) { return std::fabs(a) >= std::fabs(b) ? a : b; };
+
+    AndroidPlatform& platform = *session.platform;
+    platform.queueAxis(input::PadAxis::LeftX, value(AMOTION_EVENT_AXIS_X));
+    platform.queueAxis(input::PadAxis::LeftY, value(AMOTION_EVENT_AXIS_Y));
+    platform.queueAxis(input::PadAxis::RightX, dominant(value(AMOTION_EVENT_AXIS_Z), value(AMOTION_EVENT_AXIS_RX)));
+    platform.queueAxis(input::PadAxis::RightY, dominant(value(AMOTION_EVENT_AXIS_RZ), value(AMOTION_EVENT_AXIS_RY)));
+    platform.queueAxis(input::PadAxis::HatX, value(AMOTION_EVENT_AXIS_HAT_X));
+    platform.queueAxis(input::PadAxis::HatY, value(AMOTION_EVENT_AXIS_HAT_Y));
+    platform.queueAxis(input::PadAxis::LeftTrigger,
+                       std::fmax(value(AMOTION_EVENT_AXIS_LTRIGGER), value(AMOTION_EVENT_AXIS_BRAKE)));
+    platform.queueAxis(input::PadAxis::RightTrigger,
+                       std::fmax(value(AMOTION_EVENT_AXIS_RTRIGGER), value(AMOTION_EVENT_AXIS_GAS)));
+}
+
 void drainInput(Session& session) {
     android_input_buffer* buffer = android_app_swap_input_buffers(session.app);
     if (!buffer) {
@@ -153,10 +218,12 @@ void drainInput(Session& session) {
     }
     for (uint64_t i = 0; i < buffer->keyEventsCount; ++i) {
         const GameActivityKeyEvent& key = buffer->keyEvents[i];
-        session.platform->queueKeyEvent(key.keyCode, key.action, key.repeatCount);
+        session.platform->queueKeyEvent(key.keyCode, key.action);
     }
     android_app_clear_key_events(buffer);
-    // No touch UI (out of scope); just don't let the queue fill up.
+    for (uint64_t i = 0; i < buffer->motionEventsCount; ++i) {
+        handleMotion(session, buffer->motionEvents[i]);
+    }
     android_app_clear_motion_events(buffer);
 }
 
@@ -172,11 +239,26 @@ extern "C" void android_main(android_app* app) {
     Session session;
     session.app = app;
     session.platform = std::make_unique<AndroidPlatform>(app);
+    for (const std::string& name : session.platform->displayNames()) {
+        LOGI("display: %s", name.c_str());
+    }
     loadTestEnvironment(session.platform->dataDir());
 
     app->userData = &session;
     app->onAppCmd = onAppCmd;
     android_app_set_key_event_filter(app, keyEventFilter);
+    android_app_set_motion_event_filter(app, motionEventFilter);
+    enableGamepadAxes();
+
+    // Test hooks that rebuild the GL context and App as if the driver had
+    // lost the context, to exercise that recovery (including carrying
+    // playback over) on demand: PVM_TEST_FORCE_CONTEXT_LOSS_FRAME=N does it
+    // after N rendered frames; creating <dataDir>/force_context_loss does it
+    // once, whenever the file appears.
+    const std::string lossMarker = session.platform->dataDir() + "/force_context_loss";
+    const char* lossFrameEnv = std::getenv("PVM_TEST_FORCE_CONTEXT_LOSS_FRAME");
+    const int forcedLossFrame = lossFrameEnv ? std::atoi(lossFrameEnv) : 0;
+    int renderedFrames = 0;
 
     std::vector<input::InputEvent> events;
     while (true) {
@@ -206,7 +288,13 @@ extern "C" void android_main(android_app* app) {
         }
         session.pvm->frame(events);
         session.platform->swapBuffers();
-        if (session.platform->contextLost()) {
+        ++renderedFrames;
+        bool forced = forcedLossFrame > 0 && renderedFrames == forcedLossFrame;
+        if (renderedFrames % 30 == 0 && access(lossMarker.c_str(), F_OK) == 0) {
+            unlink(lossMarker.c_str());
+            forced = true;
+        }
+        if (session.platform->contextLost() || forced) {
             session.recoverFromContextLoss();
         }
         if (session.platform->quitRequested()) {
