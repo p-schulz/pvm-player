@@ -129,8 +129,9 @@ void redirectStdioToLogcat() {
     }).detach();
 }
 
-// Android has no environment to set per launch, so the PVM_TEST_* hooks
-// (frame stats, autoclose, screenshots, simulated keys...) are read from
+// Android has no environment to set per launch, so the PVM_* variables the app
+// reads (the PVM_TEST_* hooks: frame stats, autoclose, screenshots, simulated
+// keys...; the PVM_*_CONFIG paths) are read from
 // <dataDir>/test_env.txt instead: one KEY=VALUE per line. Absent in normal
 // use.
 void loadTestEnvironment(const std::string& dataDir) {
@@ -138,7 +139,7 @@ void loadTestEnvironment(const std::string& dataDir) {
     std::string line;
     while (std::getline(file, line)) {
         const size_t eq = line.find('=');
-        if (eq != std::string::npos && line.compare(0, 9, "PVM_TEST_") == 0) {
+        if (eq != std::string::npos && line.compare(0, 4, "PVM_") == 0) {
             setenv(line.substr(0, eq).c_str(), line.substr(eq + 1).c_str(), 1);
             LOGI("test hook: %s", line.c_str());
         }
@@ -219,4 +220,5 @@ extern "C" void android_main(android_app* app) {
     session.pvm.reset();
     session.platform.reset();
     app->userData = nullptr;
+    LOGI("native thread finished");
 }

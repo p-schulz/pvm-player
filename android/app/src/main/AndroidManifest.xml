@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-feature
+        android:glEsVersion="0x00030000"
+        android:required="true" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- enableOnBackInvokedCallback=false: keep the classic BACK key event, so
+         the app (not the system's predictive-back handling) decides what Back
+         does on each screen. -->
+    <application
+        android:allowBackup="false"
+        android:enableOnBackInvokedCallback="false"
+        android:label="PVM Player"
+        android:theme="@style/Theme.PVMPlayer">
+
+        <!-- configChanges covers everything a controller hot-plug or a
+             fold/unfold can toggle, so the Activity (and the GL context tied
+             to it) is not recreated. -->
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="sensorLandscape">
+
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="pvm_player" />
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

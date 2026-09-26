@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Debug builds only: lets the app talk plain HTTP to the emulator's host
+         (10.0.2.2), so the HTTP transport can be tested against a local server.
+         Release builds keep the default of no cleartext traffic. -->
+    <application android:networkSecurityConfig="@xml/network_security_debug" />
+
+</manifest>
