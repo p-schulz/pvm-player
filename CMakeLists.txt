@@ -166,10 +166,11 @@ add_test(NAME input_selftest COMMAND input_selftest)
 # App
 # ---------------------------------------------------------------------------
 add_executable(pvm_player
-  src/main.cpp
+  src/platform/glfw/main_glfw.cpp
+  src/platform/glfw/glfw_platform.cpp
+  src/platform/glfw/paths.cpp
   src/app.cpp
   src/mpv_player.cpp
-  src/paths.cpp
   src/settings.cpp
   src/shader.cpp
   src/ui/menu.cpp
@@ -189,8 +190,10 @@ if(APPLE)
   # macos_sleep_guard.cpp: holds an IOKit display-idle-sleep assertion while
   # media is playing (see its header comment for why mpv's own
   # stop-screensaver doesn't cover this app's render setup). Plain C++, no
-  # Objective-C needed.
-  target_sources(pvm_player PRIVATE src/macos_media_keys.mm src/macos_sleep_guard.cpp)
+  # Objective-C needed. Both are used only by the GLFW platform.
+  target_sources(pvm_player PRIVATE
+    src/platform/glfw/macos_media_keys.mm
+    src/platform/glfw/macos_sleep_guard.cpp)
   target_link_libraries(pvm_player PRIVATE
     "-framework OpenGL"
     "-framework Cocoa"

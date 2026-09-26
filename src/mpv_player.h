@@ -6,7 +6,7 @@
 
 struct mpv_handle;
 struct mpv_render_context;
-struct GLFWwindow;
+class Platform;
 
 // Thin wrapper around libmpv's client + render (OpenGL) APIs.
 //
@@ -22,10 +22,10 @@ public:
     MpvPlayer(const MpvPlayer&) = delete;
     MpvPlayer& operator=(const MpvPlayer&) = delete;
 
-    // Creates the mpv core and the OpenGL render context. `window` must have
-    // a current GL context on the calling thread (used to resolve GL
-    // function pointers via glfwGetProcAddress).
-    bool init(GLFWwindow* window);
+    // Creates the mpv core and the OpenGL render context. The platform's GL
+    // context must be current on the calling thread; `platform` resolves the
+    // GL function pointers mpv asks for and must outlive this player.
+    bool init(const Platform& platform);
 
     void shutdown();
 

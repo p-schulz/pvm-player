@@ -6,7 +6,6 @@
 #include <vector>
 
 #include "input/input_action.h"
-#include "input/keymap.h"
 #include "mpv_player.h"
 #include "teletext/data_service.h"
 #include "teletext/navigator.h"
@@ -14,12 +13,14 @@
 #include "ui/file_browser.h"
 #include "ui/menu.h"
 
-struct GLFWwindow;
-struct GLFWmonitor;
+class Platform;
 struct ImVec2;
 struct ImVec4;
 
-// Owns the GLFW window + OpenGL context and drives the main loop.
+// The player itself: screens, settings, rendering. Knows nothing about the
+// window, event loop or OS it runs on -- all of that comes through Platform
+// (see platform/platform.h), and the loop that calls frame() lives with the
+// platform's entry point.
 class App {
 public:
     App();
@@ -28,18 +29,23 @@ public:
     App(const App&) = delete;
     App& operator=(const App&) = delete;
 
-    // Creates the window/GL context. Returns false on failure.
-    bool init(int width, int height, const char* title);
+    // Sets up GL resources, ImGui, mpv, settings and the teletext sections
+    // against `platform`, whose GL context must be current. `platform` must
+    // outlive this App. Returns false on failure.
+    bool init(Platform& platform);
 
     // Directories the root menu's "Play Media" entry browses (one or more
     // configured media folders; nested subfolders, and folders above them
     // up to the filesystem root, are all navigable -- see FileBrowser).
     void setMediaRoots(std::vector<std::string> paths);
 
-    // Runs the main loop until the window is closed. Blocks until exit.
-    void run();
+    // Runs one iteration of the main loop: applies `events` (the input that
+    // arrived since the last frame), polls mpv and renders. The caller
+    // presents the frame afterwards (Platform::swapBuffers()) and stops when
+    // Platform::quitRequested().
+    void frame(const std::vector<input::InputEvent>& events);
 
-    // Releases GLFW/GL/mpv resources. Safe to call multiple times.
+    // Releases GL/ImGui/mpv resources. Safe to call multiple times.
     void shutdown();
 
 private:
@@ -163,37 +169,20 @@ private:
     void destroySceneFbo();
     void renderPostProcess(int width, int height);
 
-    // Switches between fullscreen (borderless, covering resolveMonitor())
-    // and windowed, via GLFW's monitor association -- no window or GL
-    // context recreation, so all GL/mpv/ImGui state stays valid.
-    // Remembers the windowed geometry the first time it goes fullscreen,
-    // so toggling back restores where the window was.
-    void applyFullscreen(bool enable);
-
-    // Populates monitorChoiceNames_ ({"Primary"} + each connected
-    // monitor's GLFW name) -- called once at startup; monitor hot-plug
-    // during a run isn't tracked.
-    void scanAvailableMonitors();
-    // The monitor monitorIndex_ refers to (index 0 = whatever GLFW
-    // considers primary right now; 1..N = a specific connected monitor).
-    // Falls back to the primary monitor if the index is out of range
-    // (e.g. a monitor was unplugged since monitorIndex_ was persisted).
-    GLFWmonitor* resolveMonitor() const;
-
     void scanAvailableFonts();          // populates availableFontFiles_/fontChoiceNames_ from fontsDir_
     std::string resolveFontPath() const;  // fontPath_ (default) or fontsDir_/selectedFontFile_
     void loadSelectedFontIntoAtlas();   // AddFontFromFileTTF with a fallback chain; no atlas Clear()
     void applyFont();  // rebuilds the ImGui font atlas from fontSizePx_ + selectedFontFile_
     void saveCurrentSettings() const;
 
-    // Raw GLFW key event -> actions via keyMap_ -> handleInput(). The only
-    // place key codes are interpreted; everything below works on actions.
-    void dispatchKey(int key, int scancode, int glfwAction);
+    // Everything below this point reacts to actions only; turning raw
+    // key/button events into actions is the platform's job.
     void handleInput(const input::InputEvent& event);
     void handleTeletextInput(const input::InputEvent& event);
-    // keyMap_ = the GLFW defaults plus any overrides from keys.cfg next to
-    // the executable (see conf/keys.example.cfg).
-    void loadKeyMap(const std::string& exeDirectory);
+    // PVM_TEST_SIMULATE_KEYS entry: an action name ("confirm",
+    // "fastext_red") or a key name as in keys.cfg, the latter translated by
+    // the platform's real key map.
+    void injectSimulatedKey(const std::string& token);
     void openTeletext(int rootMenuIndex);
     // Enter on a teletext page: acts on activeTeletext_->nav's selected
     // RowLink -- a page link jumps there, a play link loads it into the
@@ -207,26 +196,31 @@ private:
     // persists it, so "Play Media" resumes there next time.
     void onPlaybackStopped();
 
-    static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
+    // Prints the PVM_TEST_FRAME_STATS summary, if that hook is on.
+    void reportFrameStats();
 
-    GLFWwindow* window_ = nullptr;
-    input::KeyMap keyMap_;
+    Platform* platform_ = nullptr;
     MpvPlayer mpv_;
 
-    // Fullscreen ("Fullscreen" settings row, persisted -- also what makes
-    // it launch fullscreen by default once turned on). windowed* remembers
-    // the pre-fullscreen geometry (captured at window creation, and again
-    // any time fullscreen is turned on from a windowed state) so toggling
-    // back restores a sensible window instead of some arbitrary spot.
-    bool fullscreen_ = false;
-    int windowedX_ = 0;
-    int windowedY_ = 0;
-    int windowedWidth_ = 1280;
-    int windowedHeight_ = 720;
+    // PVM_TEST_* hook state (see the helpers at the top of app.cpp), read
+    // once in init() and advanced by frame().
+    int frameCount_ = 0;
+    int autoCloseFrames_ = 0;
+    bool exerciseControls_ = false;
+    std::vector<std::string> simulatedKeys_;
+    bool frameStats_ = false;
+    std::vector<double> frameMs_;
+    double lastFrameTime_ = 0.0;
+    const teletext::PageStore* lastSnapshot_ = nullptr;
+    int snapshotSwaps_ = 0;
 
-    // Which monitor fullscreen uses ("Monitor" settings row, persisted).
-    // 0 = "Primary"; 1..N = a specific connected monitor -- see
-    // scanAvailableMonitors()/resolveMonitor().
+    // Fullscreen ("Fullscreen" settings row, persisted -- also what makes
+    // it launch fullscreen by default once turned on) and which display it
+    // uses ("Monitor" settings row, persisted; 0 = primary, 1..N = a
+    // specific one, named by monitorChoiceNames_). Both rows only exist
+    // where Platform::supportsWindowModes(); the values are kept in
+    // config.cfg either way so the file stays shareable between platforms.
+    bool fullscreen_ = false;
     int monitorIndex_ = 0;
     std::vector<std::string> monitorChoiceNames_;
 
@@ -348,7 +342,7 @@ private:
 
     // "VOL" + bar-graph indicator (renderVolumeIndicator()), shown for 2
     // seconds after any volume change (OSD VOLUME row or the ';'/':'
-    // hotkeys) then auto-hidden. glfwGetTime()-based rather than a frame
+    // hotkeys) then auto-hidden. Platform::now()-based rather than a frame
     // counter so the 2 seconds is wall-clock, independent of frame rate.
     double volumeIndicatorHideAtTime_ = 0.0;
 
@@ -384,19 +378,19 @@ private:
         std::unique_ptr<teletext::TeletextDataService> service;
         teletext::Navigator nav;
     };
-    // Loads <baseName>.cfg from exeDirectory (else <baseName>.default.cfg,
-    // else `envVar`'s path if that environment variable is set) and starts
-    // the NEWS/TAGESSCHAU section's background refresh; cached pages are
-    // available at once.
-    void initTeletextSection(TeletextSection& section, const std::string& exeDirectory, const std::string& baseName,
-                             const char* envVar);
+    // Loads <baseName>.cfg from dataDir (else <baseName>.default.cfg from
+    // assetDir, else `envVar`'s path if that environment variable is set)
+    // and starts the NEWS/TAGESSCHAU section's background refresh, caching
+    // under dataDir; cached pages are available at once.
+    void initTeletextSection(TeletextSection& section, const std::string& dataDir, const std::string& assetDir,
+                             const std::string& baseName, const char* envVar);
     // Same idea for a MediathekViewWeb-backed section (ARD, ZDF, ...), which
     // has its own config shape (a channel, favorites and the generated A-Z
     // window) -- see teletext/mvw_config.h. `baseName` picks the config file
     // (e.g. "ard" -> ard.cfg/ard.default.cfg) and the cache subdirectory;
     // `envVar` is the config-path override environment variable.
-    void initMvwSection(TeletextSection& section, const std::string& exeDirectory, const std::string& baseName,
-                        const char* envVar);
+    void initMvwSection(TeletextSection& section, const std::string& dataDir, const std::string& assetDir,
+                        const std::string& baseName, const char* envVar);
     TeletextSection newsSection_;
     TeletextSection tagesschauSection_;
     TeletextSection ardSection_;

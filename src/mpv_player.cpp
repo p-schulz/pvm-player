@@ -1,17 +1,18 @@
 #include "mpv_player.h"
 
-#include <glad/gl.h>
-#include <GLFW/glfw3.h>
+#include "gl.h"
 
 #include <mpv/client.h>
 #include <mpv/render_gl.h>
 
 #include <cstdio>
 
+#include "platform/platform.h"
+
 namespace {
 
-void* getProcAddressMpv(void* /*ctx*/, const char* name) {
-    return reinterpret_cast<void*>(glfwGetProcAddress(name));
+void* getProcAddressMpv(void* ctx, const char* name) {
+    return static_cast<const Platform*>(ctx)->glProcAddress(name);
 }
 
 void checkMpvError(int status, const char* what) {
@@ -33,7 +34,7 @@ void MpvPlayer::onRenderUpdate(void* ctx) {
     self->redrawFlag_.store(true, std::memory_order_relaxed);
 }
 
-bool MpvPlayer::init(GLFWwindow* /*window*/) {
+bool MpvPlayer::init(const Platform& platform) {
     mpv_ = mpv_create();
     if (!mpv_) {
         std::fprintf(stderr, "Failed to create mpv instance\n");
@@ -57,7 +58,7 @@ bool MpvPlayer::init(GLFWwindow* /*window*/) {
 
     mpv_opengl_init_params glInitParams{};
     glInitParams.get_proc_address = getProcAddressMpv;
-    glInitParams.get_proc_address_ctx = nullptr;
+    glInitParams.get_proc_address_ctx = const_cast<Platform*>(&platform);
 
     int advancedControl = 0;  // Simple polling model (see class comment).
     mpv_render_param renderParams[] = {

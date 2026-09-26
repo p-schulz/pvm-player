@@ -1,11 +1,8 @@
 #include "app.h"
 
-#include <glad/gl.h>
-// GLFW must be included after glad so it doesn't pull in its own GL headers.
-#include <GLFW/glfw3.h>
+#include "gl.h"
 
 #include <imgui.h>
-#include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 
 #include <algorithm>
@@ -19,8 +16,7 @@
 #include <sstream>
 #include <vector>
 
-#include "paths.h"
-#include "platform/glfw/keymap_glfw.h"
+#include "platform/platform.h"
 #include "settings.h"
 #include "shader.h"
 #include "teletext/mvw_config.h"
@@ -29,11 +25,6 @@
 #include "teletext/news_service.h"
 #include "teletext/teletext_view.h"
 #include "ui/style.h"
-
-#ifdef __APPLE__
-#include "macos_media_keys.h"
-#include "macos_sleep_guard.h"
-#endif
 
 namespace fs = std::filesystem;
 
@@ -76,15 +67,16 @@ bool exerciseControlsRequested() {
 }
 
 // Optional test hook: PVM_TEST_SIMULATE_KEYS is a comma-separated list of
-// key names (UP, DOWN, LEFT, RIGHT, ENTER, ESCAPE, SPACE, BACKSPACE). One
-// key is dispatched through the real App::dispatchKey() path every
-// kSimulateIntervalFrames frames, so full keyboard-only navigation --
-// menu -> file browser -> playback -> back to menu -- can be regression
-// tested without a human at the keyboard.
+// key names as spelled in keys.cfg (UP, ENTER, ESCAPE, SPACE, F1, R, 7...) or
+// action names (confirm, fastext_red, digit_7...). One is injected through
+// the real input path (key names via the platform's key map) every
+// kSimulateIntervalFrames frames, so full keyboard-only navigation -- menu ->
+// file browser -> playback -> back to menu -- can be regression tested
+// without a human at the keyboard.
 constexpr int kSimulateIntervalFrames = 15;
 
-std::vector<int> parseSimulatedKeys() {
-    std::vector<int> keys;
+std::vector<std::string> parseSimulatedKeys() {
+    std::vector<std::string> keys;
     const char* env = std::getenv("PVM_TEST_SIMULATE_KEYS");
     if (!env) {
         return keys;
@@ -92,28 +84,9 @@ std::vector<int> parseSimulatedKeys() {
     std::stringstream ss{std::string(env)};
     std::string tok;
     while (std::getline(ss, tok, ',')) {
-        if (tok == "UP") keys.push_back(GLFW_KEY_UP);
-        else if (tok == "DOWN") keys.push_back(GLFW_KEY_DOWN);
-        else if (tok == "LEFT") keys.push_back(GLFW_KEY_LEFT);
-        else if (tok == "RIGHT") keys.push_back(GLFW_KEY_RIGHT);
-        else if (tok == "ENTER") keys.push_back(GLFW_KEY_ENTER);
-        else if (tok == "ESCAPE") keys.push_back(GLFW_KEY_ESCAPE);
-        else if (tok == "SPACE") keys.push_back(GLFW_KEY_SPACE);
-        else if (tok == "F") keys.push_back(GLFW_KEY_F);
-        else if (tok == "BACKSPACE") keys.push_back(GLFW_KEY_BACKSPACE);
-        else if (tok == "C") keys.push_back(GLFW_KEY_C);
-        else if (tok == "M") keys.push_back(GLFW_KEY_M);
-        else if (tok == "I") keys.push_back(GLFW_KEY_I);
-        else if (tok == "V") keys.push_back(GLFW_KEY_V);
-        else if (tok == "B") keys.push_back(GLFW_KEY_B);
-        else if (tok == "R") keys.push_back(GLFW_KEY_R);
-        else if (tok == "G") keys.push_back(GLFW_KEY_G);
-        else if (tok == "Y") keys.push_back(GLFW_KEY_Y);
-        else if (tok == "F1") keys.push_back(GLFW_KEY_F1);
-        else if (tok == "F2") keys.push_back(GLFW_KEY_F2);
-        else if (tok == "F3") keys.push_back(GLFW_KEY_F3);
-        else if (tok == "F4") keys.push_back(GLFW_KEY_F4);
-        else if (tok.size() == 1 && tok[0] >= '0' && tok[0] <= '9') keys.push_back(GLFW_KEY_0 + (tok[0] - '0'));
+        if (!tok.empty()) {
+            keys.push_back(tok);
+        }
     }
     return keys;
 }
@@ -134,14 +107,6 @@ void saveScreenshotPPM(const char* path, int width, int height) {
     }
     std::fclose(f);
     std::fprintf(stdout, "Wrote screenshot: %s\n", path);
-}
-
-void glfwErrorCallback(int error, const char* description) {
-    std::fprintf(stderr, "GLFW error %d: %s\n", error, description);
-}
-
-void framebufferSizeCallback(GLFWwindow* /*window*/, int width, int height) {
-    glViewport(0, 0, width, height);
 }
 
 void checkGlError(const char* tag) {
@@ -328,65 +293,32 @@ App::~App() {
     shutdown();
 }
 
-bool App::init(int width, int height, const char* title) {
-    glfwSetErrorCallback(glfwErrorCallback);
+bool App::init(Platform& platform) {
+    platform_ = &platform;
 
-    if (!glfwInit()) {
-        std::fprintf(stderr, "Failed to initialize GLFW\n");
-        return false;
-    }
-
-    scanAvailableMonitors();
-
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-#ifdef __APPLE__
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
-#endif
-
-    window_ = glfwCreateWindow(width, height, title, nullptr, nullptr);
-    if (!window_) {
-        std::fprintf(stderr, "Failed to create GLFW window\n");
-        glfwTerminate();
-        return false;
-    }
-
-    // Remembered as the "restore to windowed" geometry if fullscreen_ turns
-    // out to be enabled once settings load below (or is turned on later).
-    windowedWidth_ = width;
-    windowedHeight_ = height;
-    glfwGetWindowPos(window_, &windowedX_, &windowedY_);
-
-    glfwMakeContextCurrent(window_);
-    glfwSwapInterval(1);  // vsync
-
-    if (!gladLoadGL(reinterpret_cast<GLADloadfunc>(glfwGetProcAddress))) {
-        std::fprintf(stderr, "Failed to initialize glad (load GL function pointers)\n");
-        glfwDestroyWindow(window_);
-        window_ = nullptr;
-        glfwTerminate();
-        return false;
-    }
-
-    glfwSetFramebufferSizeCallback(window_, framebufferSizeCallback);
-    glfwSetWindowUserPointer(window_, this);
-    glfwSetKeyCallback(window_, &App::keyCallback);
-
-    std::fprintf(stdout, "OpenGL: %s / GLSL: %s / Renderer: %s\n",
-                 glGetString(GL_VERSION), glGetString(GL_SHADING_LANGUAGE_VERSION),
-                 glGetString(GL_RENDERER));
-
-    if (!mpv_.init(window_)) {
+    if (!mpv_.init(platform)) {
         std::fprintf(stderr, "Failed to initialize mpv player\n");
         return false;
     }
 
-    const std::string dir = exeDir();
-    loadKeyMap(dir);
+    // Shipped read-only files (shaders, fonts, *.default.cfg) vs. files the
+    // user edits and the app writes (config.cfg, *.cfg overrides, caches).
+    const std::string assetDir = platform.assetDir();
+    const std::string dataDir = platform.dataDir();
 
-    fontPath_ = dir + "/assets/fonts/JetBrainsMono-Regular.ttf";
-    fontsDir_ = dir + "/assets/fonts";
+    if (std::vector<std::string> roots = platform.defaultMediaRoots(); !roots.empty()) {
+        mediaRoots_ = std::move(roots);
+    }
+    monitorChoiceNames_ = platform.displayNames();
+
+    autoCloseFrames_ = autoCloseFrameCount();
+    exerciseControls_ = exerciseControlsRequested();
+    simulatedKeys_ = parseSimulatedKeys();
+    frameStats_ = frameStatsRequested();
+    lastFrameTime_ = platform.now();
+
+    fontPath_ = assetDir + "/assets/fonts/JetBrainsMono-Regular.ttf";
+    fontsDir_ = assetDir + "/assets/fonts";
     scanAvailableFonts();
 
     // Load persisted settings before the first font bake below, so a
@@ -394,7 +326,7 @@ bool App::init(int width, int height, const char* title) {
     // this App's own defaults so any field absent from the file (missing
     // file entirely on first run, or an older file written before a field
     // existed) keeps its default rather than becoming zero-initialized.
-    configPath_ = dir + "/config.cfg";
+    configPath_ = dataDir + "/config.cfg";
     AppSettings loadedSettings;
     loadedSettings.fontSizePx = fontSizePx_;
     loadedSettings.fontFile = selectedFontFile_;
@@ -494,13 +426,21 @@ bool App::init(int width, int height, const char* title) {
     aspectOverrideIndex_ =
         ((loadedSettings.aspectOverrideIndex % aspectRatioCount) + aspectRatioCount) % aspectRatioCount;
     mpv_.setAspectOverride(kAspectRatioValues[static_cast<size_t>(aspectOverrideIndex_)]);
-    const int monitorChoiceCount = static_cast<int>(monitorChoiceNames_.size());
-    monitorIndex_ = std::clamp(loadedSettings.monitorIndex, 0, monitorChoiceCount - 1);
-    if (loadedSettings.fullscreen) {
-        applyFullscreen(true);
+    // Fullscreen/Monitor are loaded verbatim even where the platform has no
+    // window modes (they're hidden there but written back unchanged, so
+    // config.cfg stays shareable across platforms); they only act where it does.
+    fullscreen_ = loadedSettings.fullscreen;
+    if (platform.supportsWindowModes()) {
+        const int monitorChoiceCount = static_cast<int>(monitorChoiceNames_.size());
+        monitorIndex_ = std::clamp(loadedSettings.monitorIndex, 0, monitorChoiceCount - 1);
+        if (fullscreen_) {
+            platform.setFullscreen(true, monitorIndex_);
+        }
+    } else {
+        monitorIndex_ = std::max(loadedSettings.monitorIndex, 0);
     }
 
-    blitProgram_ = loadShaderProgram(dir + "/shaders/passthrough.vert", dir + "/shaders/blit.frag");
+    blitProgram_ = loadShaderProgram(assetDir + "/shaders/passthrough.vert", assetDir + "/shaders/blit.frag");
     if (!blitProgram_) {
         std::fprintf(stderr, "Failed to load blit shader\n");
         return false;
@@ -510,7 +450,7 @@ bool App::init(int width, int height, const char* title) {
     // requires a bound VAO to issue a draw call.
     glGenVertexArrays(1, &blitVao_);
 
-    crtProgram_ = loadShaderProgram(dir + "/shaders/passthrough.vert", dir + "/shaders/crt.frag");
+    crtProgram_ = loadShaderProgram(assetDir + "/shaders/passthrough.vert", assetDir + "/shaders/crt.frag");
     if (!crtProgram_) {
         std::fprintf(stderr, "Failed to load CRT shader\n");
         return false;
@@ -526,22 +466,18 @@ bool App::init(int width, int height, const char* title) {
     ui::applyPvmStyle();
     applyTextColor();
 
-    ImGui_ImplGlfw_InitForOpenGL(window_, /*install_callbacks=*/true);
-    ImGui_ImplOpenGL3_Init("#version 330 core");
+    if (!platform.imguiInit()) {
+        std::fprintf(stderr, "Failed to initialize the ImGui platform backend\n");
+        return false;
+    }
+    ImGui_ImplOpenGL3_Init(platform.glslVersion());
     imguiInitialized_ = true;
 
     rootMenu_.setItems({{"PLAY MEDIA"}, {"NEWS"}, {"TAGESSCHAU"}, {"ARD"}, {"ZDF"}, {"SETTINGS"}, {"EXIT"}});
-    initTeletextSection(newsSection_, dir, "news", "PVM_NEWS_CONFIG");
-    initTeletextSection(tagesschauSection_, dir, "tagesschau", "PVM_TAGESSCHAU_CONFIG");
-    initMvwSection(ardSection_, dir, "ard", "PVM_ARD_CONFIG");
-    initMvwSection(zdfSection_, dir, "zdf", "PVM_ZDF_CONFIG");
-
-#ifdef __APPLE__
-    // Lets the hardware Play/Pause media key toggle playback in addition
-    // to Space, regardless of which screen is showing -- mpv_.togglePause()
-    // already no-ops sensibly when nothing is loaded.
-    macos_media_keys::install([this]() { mpv_.togglePause(); });
-#endif
+    initTeletextSection(newsSection_, dataDir, assetDir, "news", "PVM_NEWS_CONFIG");
+    initTeletextSection(tagesschauSection_, dataDir, assetDir, "tagesschau", "PVM_TAGESSCHAU_CONFIG");
+    initMvwSection(ardSection_, dataDir, assetDir, "ard", "PVM_ARD_CONFIG");
+    initMvwSection(zdfSection_, dataDir, assetDir, "zdf", "PVM_ZDF_CONFIG");
 
     return true;
 }
@@ -550,53 +486,6 @@ void App::setMediaRoots(std::vector<std::string> paths) {
     if (!paths.empty()) {
         mediaRoots_ = std::move(paths);
     }
-}
-
-void App::applyFullscreen(bool enable) {
-    if (!window_) {
-        return;
-    }
-    if (enable) {
-        if (!fullscreen_) {
-            // Remember where the window was so turning fullscreen back off
-            // restores it here, not at some arbitrary GLFW default spot.
-            glfwGetWindowPos(window_, &windowedX_, &windowedY_);
-            glfwGetWindowSize(window_, &windowedWidth_, &windowedHeight_);
-        }
-        GLFWmonitor* monitor = resolveMonitor();
-        if (monitor) {
-            const GLFWvidmode* mode = glfwGetVideoMode(monitor);
-            glfwSetWindowMonitor(window_, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
-        }
-    } else {
-        glfwSetWindowMonitor(window_, nullptr, windowedX_, windowedY_, windowedWidth_, windowedHeight_, 0);
-    }
-    fullscreen_ = enable;
-}
-
-void App::scanAvailableMonitors() {
-    monitorChoiceNames_.clear();
-    monitorChoiceNames_.push_back("Primary");
-
-    int count = 0;
-    GLFWmonitor** monitors = glfwGetMonitors(&count);
-    for (int i = 0; i < count; ++i) {
-        const char* name = glfwGetMonitorName(monitors[i]);
-        monitorChoiceNames_.push_back(name ? name : ("Monitor " + std::to_string(i + 1)));
-    }
-}
-
-GLFWmonitor* App::resolveMonitor() const {
-    if (monitorIndex_ <= 0) {
-        return glfwGetPrimaryMonitor();
-    }
-    int count = 0;
-    GLFWmonitor** monitors = glfwGetMonitors(&count);
-    const int i = monitorIndex_ - 1;
-    if (i < 0 || i >= count) {
-        return glfwGetPrimaryMonitor();  // e.g. that monitor was unplugged since being persisted
-    }
-    return monitors[i];
 }
 
 void App::scanAvailableFonts() {
@@ -654,7 +543,7 @@ void App::applyFont() {
     loadSelectedFontIntoAtlas();
     // Rebuild the backend's GL device objects (including the font atlas
     // texture) from the new bake. Safe here: always called from
-    // handleInput(), i.e. during glfwPollEvents() at the top of the frame,
+    // handleInput(), i.e. while applying the frame's input events at the top of the frame,
     // before this frame's ImGui::NewFrame()/Render().
     ImGui_ImplOpenGL3_DestroyDeviceObjects();
     ImGui_ImplOpenGL3_CreateDeviceObjects();
@@ -706,125 +595,124 @@ bool App::loadMedia(const std::string& path) {
     return mpv_.loadFile(path);
 }
 
-void App::run() {
-    if (!window_) {
-        return;
+void App::frame(const std::vector<input::InputEvent>& events) {
+    if (frameStats_) {
+        const double now = platform_->now();
+        if (frameCount_ > 5) {  // skip window/GL warm-up
+            frameMs_.push_back((now - lastFrameTime_) * 1000.0);
+            if (frameMs_.back() > 100.0) {
+                std::fprintf(stdout, "[stats] slow frame %d: %.0f ms (screen=%d)\n", frameCount_, frameMs_.back(),
+                             static_cast<int>(screen_));
+            }
+        }
+        lastFrameTime_ = now;
+        const std::shared_ptr<const teletext::PageStore> current = newsSection_.service->snapshot();
+        if (lastSnapshot_ && current.get() != lastSnapshot_) {
+            ++snapshotSwaps_;
+            std::fprintf(stdout, "[stats] news snapshot swapped (frame %d, %zu pages)\n", frameCount_,
+                         current->size());
+        }
+        lastSnapshot_ = current.get();
     }
+    for (const input::InputEvent& event : events) {
+        handleInput(event);
+    }
+    mpv_.pollEvents();
 
-    const int autoCloseFrames = autoCloseFrameCount();
-    const bool exerciseControls = exerciseControlsRequested();
-    const std::vector<int> simulatedKeys = parseSimulatedKeys();
-    int frame = 0;
+    if (screen_ == Screen::Playing && mpv_.consumeEndOfFile()) {
+        onPlaybackStopped();
+    }
+    // Keep the display awake while actually playing (not while paused, or on
+    // any other screen).
+    platform_->setKeepAwake(screen_ == Screen::Playing && !mpv_.isPaused());
 
-    const bool frameStats = frameStatsRequested();
-    std::vector<double> frameMs;
-    double lastFrameTime = glfwGetTime();
-    const teletext::PageStore* lastSnapshot = nullptr;
-    int snapshotSwaps = 0;
+    ImGui_ImplOpenGL3_NewFrame();
+    platform_->imguiNewFrame();
+    ImGui::NewFrame();
 
-    while (!glfwWindowShouldClose(window_)) {
-        if (frameStats) {
-            const double now = glfwGetTime();
-            if (frame > 5) {  // skip window/GL warm-up
-                frameMs.push_back((now - lastFrameTime) * 1000.0);
-                if (frameMs.back() > 100.0) {
-                    std::fprintf(stdout, "[stats] slow frame %d: %.0f ms (screen=%d)\n", frame, frameMs.back(),
-                                 static_cast<int>(screen_));
-                }
-            }
-            lastFrameTime = now;
-            const std::shared_ptr<const teletext::PageStore> current = newsSection_.service->snapshot();
-            if (lastSnapshot && current.get() != lastSnapshot) {
-                ++snapshotSwaps;
-                std::fprintf(stdout, "[stats] news snapshot swapped (frame %d, %zu pages)\n", frame, current->size());
-            }
-            lastSnapshot = current.get();
-        }
-        glfwPollEvents();
-        mpv_.pollEvents();
+    int fbWidth, fbHeight;
+    platform_->framebufferSize(fbWidth, fbHeight);
+    ensureSceneFbo(fbWidth, fbHeight);
 
-        if (screen_ == Screen::Playing && mpv_.consumeEndOfFile()) {
-            onPlaybackStopped();
-        }
-#ifdef __APPLE__
-        // Keep the display awake while actually playing (not while paused,
-        // or on any other screen) -- see macos_sleep_guard.h for why mpv's
-        // own screensaver inhibition doesn't reach this app's render setup.
-        macos_sleep_guard::setActive(screen_ == Screen::Playing && !mpv_.isPaused());
-#endif
+    // Video + ImGui composite into one offscreen scene FBO; the CRT
+    // pass (or a plain passthrough when disabled) then draws that
+    // scene to the real backbuffer as a final fullscreen-quad pass.
+    glBindFramebuffer(GL_FRAMEBUFFER, sceneFbo_);
+    renderFrame();
+    checkGlError("renderFrame");
+    renderHud();
+    checkGlError("renderHud");
 
-        ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplGlfw_NewFrame();
-        ImGui::NewFrame();
+    renderPostProcess(fbWidth, fbHeight);
+    checkGlError("renderPostProcess");
 
-        int fbWidth, fbHeight;
-        glfwGetFramebufferSize(window_, &fbWidth, &fbHeight);
-        ensureSceneFbo(fbWidth, fbHeight);
-
-        // Video + ImGui composite into one offscreen scene FBO; the CRT
-        // pass (or a plain passthrough when disabled) then draws that
-        // scene to the real backbuffer as a final fullscreen-quad pass.
-        glBindFramebuffer(GL_FRAMEBUFFER, sceneFbo_);
-        renderFrame();
-        checkGlError("renderFrame");
-        renderHud();
-        checkGlError("renderHud");
-
-        renderPostProcess(fbWidth, fbHeight);
-        checkGlError("renderPostProcess");
-
-        glfwSwapBuffers(window_);
-
-        if (exerciseControls && screen_ == Screen::Playing) {
-            if (frame == 20) {
-                std::fprintf(stdout, "[test] t=%.2f paused=%d -> togglePause()\n",
-                             mpv_.timePositionSeconds(), mpv_.isPaused());
-                mpv_.togglePause();
-            } else if (frame == 40) {
-                std::fprintf(stdout, "[test] t=%.2f paused=%d -> togglePause()\n",
-                             mpv_.timePositionSeconds(), mpv_.isPaused());
-                mpv_.togglePause();
-            } else if (frame == 60) {
-                std::fprintf(stdout, "[test] t=%.2f paused=%d -> seekRelative(+5)\n",
-                             mpv_.timePositionSeconds(), mpv_.isPaused());
-                mpv_.seekRelative(5.0);
-            } else if (frame == 80) {
-                std::fprintf(stdout, "[test] t=%.2f paused=%d (final)\n",
-                             mpv_.timePositionSeconds(), mpv_.isPaused());
-            }
-        }
-
-        if (!simulatedKeys.empty() && frame > 0 && frame % kSimulateIntervalFrames == 0) {
-            size_t idx = static_cast<size_t>(frame / kSimulateIntervalFrames) - 1;
-            if (idx < simulatedKeys.size()) {
-                std::fprintf(stdout, "[test] simulate key #%zu = %d (screen=%d)\n", idx,
-                             simulatedKeys[idx], static_cast<int>(screen_));
-                dispatchKey(simulatedKeys[idx], 0, GLFW_PRESS);
-            }
-        }
-
-        ++frame;
-        if (autoCloseFrames > 0 && frame >= autoCloseFrames) {
-            if (const char* path = screenshotPath()) {
-                int width, height;
-                glfwGetFramebufferSize(window_, &width, &height);
-                saveScreenshotPPM(path, width, height);
-            }
-            glfwSetWindowShouldClose(window_, GLFW_TRUE);
+    if (exerciseControls_ && screen_ == Screen::Playing) {
+        if (frameCount_ == 20) {
+            std::fprintf(stdout, "[test] t=%.2f paused=%d -> togglePause()\n",
+                         mpv_.timePositionSeconds(), mpv_.isPaused());
+            mpv_.togglePause();
+        } else if (frameCount_ == 40) {
+            std::fprintf(stdout, "[test] t=%.2f paused=%d -> togglePause()\n",
+                         mpv_.timePositionSeconds(), mpv_.isPaused());
+            mpv_.togglePause();
+        } else if (frameCount_ == 60) {
+            std::fprintf(stdout, "[test] t=%.2f paused=%d -> seekRelative(+5)\n",
+                         mpv_.timePositionSeconds(), mpv_.isPaused());
+            mpv_.seekRelative(5.0);
+        } else if (frameCount_ == 80) {
+            std::fprintf(stdout, "[test] t=%.2f paused=%d (final)\n",
+                         mpv_.timePositionSeconds(), mpv_.isPaused());
         }
     }
 
-    if (frameStats && !frameMs.empty()) {
-        std::vector<double> sorted = frameMs;
+    if (!simulatedKeys_.empty() && frameCount_ > 0 && frameCount_ % kSimulateIntervalFrames == 0) {
+        const size_t idx = static_cast<size_t>(frameCount_ / kSimulateIntervalFrames) - 1;
+        if (idx < simulatedKeys_.size()) {
+            std::fprintf(stdout, "[test] simulate key #%zu = %s (screen=%d)\n", idx, simulatedKeys_[idx].c_str(),
+                         static_cast<int>(screen_));
+            injectSimulatedKey(simulatedKeys_[idx]);
+        }
+    }
+
+    ++frameCount_;
+    if (autoCloseFrames_ > 0 && frameCount_ >= autoCloseFrames_) {
+        // Read before the caller swaps buffers, while the back buffer still
+        // holds this frame.
+        if (const char* path = screenshotPath()) {
+            saveScreenshotPPM(path, fbWidth, fbHeight);
+        }
+        platform_->requestQuit();
+    }
+}
+
+void App::injectSimulatedKey(const std::string& token) {
+    std::vector<input::InputEvent> events;
+    if (!platform_->translateKeyName(token, events)) {
+        const std::optional<input::Action> action = input::actionFromName(token);
+        if (!action) {
+            std::fprintf(stderr, "[test] unknown simulated key '%s'\n", token.c_str());
+            return;
+        }
+        events.push_back(input::InputEvent{*action, input::Phase::Press});
+    }
+    for (const input::InputEvent& event : events) {
+        handleInput(event);
+    }
+}
+
+void App::reportFrameStats() {
+    if (frameStats_ && !frameMs_.empty()) {
+        std::vector<double> sorted = frameMs_;
         std::sort(sorted.begin(), sorted.end());
         double sum = 0.0;
-        for (double ms : frameMs) sum += ms;
+        for (double ms : frameMs_) sum += ms;
         std::fprintf(stdout,
                      "[stats] %zu frames: avg %.2f ms, p99 %.2f ms, worst %.2f ms, %d news snapshot swaps\n",
-                     frameMs.size(), sum / static_cast<double>(frameMs.size()),
+                     frameMs_.size(), sum / static_cast<double>(frameMs_.size()),
                      sorted[static_cast<size_t>(static_cast<double>(sorted.size() - 1) * 0.99)], sorted.back(),
-                     snapshotSwaps);
+                     snapshotSwaps_);
     }
+    frameMs_.clear();
 }
 
 void App::ensureSceneFbo(int width, int height) {
@@ -903,7 +791,7 @@ void App::renderPostProcess(int width, int height) {
 
 void App::renderFrame() {
     int width, height;
-    glfwGetFramebufferSize(window_, &width, &height);
+    platform_->framebufferSize(width, height);
     glViewport(0, 0, width, height);
 
     // PVM idle screen: flat black. Also the backdrop for the menu screens.
@@ -1037,7 +925,7 @@ void App::renderPlaybackHud() {
         renderAudioProgressBar();
     }
 
-    if (glfwGetTime() < volumeIndicatorHideAtTime_) {
+    if (platform_->now() < volumeIndicatorHideAtTime_) {
         renderVolumeIndicator();
     }
 
@@ -1054,7 +942,7 @@ void App::renderPlaybackHud() {
 // a stuck/blank video screen.
 void App::renderAudioIndicator() {
     // ImGui positioning is in its own logical coordinate space (ImGuiIO::
-    // DisplaySize), which is the GLFW *window* size, not the raw GL
+    // DisplaySize), which is the platform's logical window size, not the raw GL
     // framebuffer pixel size -- those differ by the display scale factor
     // on HiDPI/Retina screens. Mixing the two silently mispositions
     // anything but a (0,0) pivot.
@@ -1307,7 +1195,7 @@ void App::drawMenuRow(const std::string& label, bool selected) {
 // need to wait a frame for GetWindowPos()/GetWindowSize() to settle).
 ImVec2 App::menuPivotAnchor() const {
     // ImGui positioning is in its own logical coordinate space (ImGuiIO::
-    // DisplaySize -- the GLFW *window* size), not the raw GL framebuffer
+    // DisplaySize -- the platform's logical window size), not the raw GL framebuffer
     // pixel size; those differ by the display scale factor on HiDPI/Retina
     // screens. Mixing the two silently mispositions anything but a (0,0)
     // pivot (verified: "Center" landed in the bottom-right corner on a 2x
@@ -1566,21 +1454,25 @@ std::vector<App::SettingsRowDesc> App::buildSettingsRows() {
 
     std::vector<SettingsRowDesc> rows;
 
-    SettingsRowDesc fullscreenRow = boolRow("Fullscreen", &fullscreen_, "ON", "OFF");
-    fullscreenRow.onBoolChanged = [this]() { applyFullscreen(fullscreen_); };
-    rows.push_back(fullscreenRow);
+    // Window modes are a desktop concept; on a platform with one fixed
+    // display these rows would do nothing, so they aren't offered.
+    if (platform_->supportsWindowModes()) {
+        SettingsRowDesc fullscreenRow = boolRow("Fullscreen", &fullscreen_, "ON", "OFF");
+        fullscreenRow.onBoolChanged = [this]() { platform_->setFullscreen(fullscreen_, monitorIndex_); };
+        rows.push_back(fullscreenRow);
 
-    SettingsRowDesc monitorRow;
-    monitorRow.type = SettingsRowType::Enum;
-    monitorRow.label = "Monitor";
-    monitorRow.enumPtr = &monitorIndex_;
-    monitorRow.enumNames = &monitorChoiceNames_;
-    monitorRow.onEnumChanged = [this]() {
-        if (fullscreen_) {
-            applyFullscreen(true);  // move the fullscreen window to the newly selected monitor right away
-        }
-    };
-    rows.push_back(monitorRow);
+        SettingsRowDesc monitorRow;
+        monitorRow.type = SettingsRowType::Enum;
+        monitorRow.label = "Monitor";
+        monitorRow.enumPtr = &monitorIndex_;
+        monitorRow.enumNames = &monitorChoiceNames_;
+        monitorRow.onEnumChanged = [this]() {
+            if (fullscreen_) {
+                platform_->setFullscreen(true, monitorIndex_);  // move the fullscreen window to the newly selected monitor right away
+            }
+        };
+        rows.push_back(monitorRow);
+    }
 
     SettingsRowDesc fontSizeRow =
         intRow("Font Size", &fontSizePx_, kFontSizeMin, kFontSizeSafetyCeiling, kFontSizeStep, " px");
@@ -1754,7 +1646,7 @@ std::vector<App::SettingsRowDesc> App::buildOsdRows() {
     volumeRow.onIntChanged = [this](int v) {
         volume_ = std::clamp(v, 0, 100);
         mpv_.setVolume(volume_);
-        volumeIndicatorHideAtTime_ = glfwGetTime() + 2.0;
+        volumeIndicatorHideAtTime_ = platform_->now() + 2.0;
     };
     rows.push_back(volumeRow);
 
@@ -1862,7 +1754,7 @@ void App::activateRootMenuItem(int index) {
             screen_ = Screen::Settings;
             break;
         case 6:  // Exit
-            glfwSetWindowShouldClose(window_, GLFW_TRUE);
+            platform_->requestQuit();
             break;
         default:
             break;
@@ -1886,33 +1778,6 @@ void App::enterFileBrowser(std::vector<std::string> extensions) {
     }
     fileBrowser_.open(roots, std::move(extensions), showHiddenFiles_);
     screen_ = Screen::FileBrowser;
-}
-
-void App::loadKeyMap(const std::string& exeDirectory) {
-    keyMap_ = input::glfw::defaultKeyMap();
-    const std::string path = exeDirectory + "/keys.cfg";
-    std::ifstream file(path);
-    if (!file) {
-        return;  // optional; the defaults cover every action
-    }
-    for (const std::string& warning : keyMap_.loadOverrides(file, input::glfw::codeFromName, path)) {
-        std::fprintf(stderr, "%s\n", warning.c_str());
-    }
-    std::fprintf(stdout, "Loaded key bindings from %s\n", path.c_str());
-}
-
-void App::dispatchKey(int key, int scancode, int glfwAction) {
-    const std::optional<input::Phase> phase = input::glfw::phaseFromGlfwAction(glfwAction);
-    if (!phase) {
-        return;
-    }
-    // One physical key may emit several actions (B = aspect ratio while
-    // playing, blue on a teletext page); each screen reacts to at most one.
-    // Copied because a handler could in principle rebind keys.
-    const std::vector<input::Action> actions = keyMap_.actionsFor(input::glfw::inputCode(key, scancode));
-    for (const input::Action action : actions) {
-        handleInput(input::InputEvent{action, *phase});
-    }
 }
 
 void App::handleInput(const input::InputEvent& event) {
@@ -1953,7 +1818,7 @@ void App::handleInput(const input::InputEvent& event) {
                     break;
                 case Action::Back:
                     if (pressed) {
-                        glfwSetWindowShouldClose(window_, GLFW_TRUE);
+                        platform_->requestQuit();
                     }
                     break;
                 default:
@@ -2161,7 +2026,7 @@ void App::handleInput(const input::InputEvent& event) {
                 case Action::VolumeUp:
                     volume_ = std::clamp(volume_ + (action == Action::VolumeUp ? 5 : -5), 0, 100);
                     mpv_.setVolume(volume_);
-                    volumeIndicatorHideAtTime_ = glfwGetTime() + 2.0;
+                    volumeIndicatorHideAtTime_ = platform_->now() + 2.0;
                     saveCurrentSettings();
                     break;
                 case Action::Back:
@@ -2200,7 +2065,7 @@ void App::handleTeletextInput(const input::InputEvent& event) {
 
     if (const int digit = input::digitOf(event.action); digit >= 0) {
         if (pressed) {
-            nav.digit(digit, glfwGetTime());
+            nav.digit(digit, platform_->now());
         }
         return;
     }
@@ -2259,22 +2124,22 @@ void App::activateTeletextSelection() {
     }
 }
 
-// Loads the section's config (<baseName>.cfg next to the executable, else the
-// shipped <baseName>.default.cfg; the environment variable `envVar` overrides
-// both) and starts its service. With no usable config the section still works:
+// Loads the section's config (<baseName>.cfg from dataDir, else the shipped
+// <baseName>.default.cfg from assetDir; the environment variable `envVar`
+// overrides both) and starts its service, caching under dataDir/cache. With no usable config the section still works:
 // page 100 says no sources are configured.
-void App::initTeletextSection(TeletextSection& section, const std::string& exeDirectory, const std::string& baseName,
-                              const char* envVar) {
+void App::initTeletextSection(TeletextSection& section, const std::string& dataDir, const std::string& assetDir,
+                              const std::string& baseName, const char* envVar) {
     teletext::NewsConfig config;
     std::vector<std::string> warnings;
 
     std::string path;
     if (const char* env = std::getenv(envVar)) {
         path = env;
-    } else if (fs::exists(exeDirectory + "/" + baseName + ".cfg")) {
-        path = exeDirectory + "/" + baseName + ".cfg";
+    } else if (fs::exists(dataDir + "/" + baseName + ".cfg")) {
+        path = dataDir + "/" + baseName + ".cfg";
     } else {
-        path = exeDirectory + "/" + baseName + ".default.cfg";
+        path = assetDir + "/" + baseName + ".default.cfg";
     }
     if (!teletext::loadNewsConfig(path, config, &warnings)) {
         std::fprintf(stderr, "[%s] no config at %s -- this section will have no sources\n", baseName.c_str(),
@@ -2286,7 +2151,7 @@ void App::initTeletextSection(TeletextSection& section, const std::string& exeDi
 
     // Cached pages are loaded (and published) right here in the constructor;
     // the live refresh then runs on the service's own thread.
-    auto service = std::make_unique<teletext::NewsService>(std::move(config), exeDirectory + "/cache/" + baseName);
+    auto service = std::make_unique<teletext::NewsService>(std::move(config), dataDir + "/cache/" + baseName);
     if (const char* env = std::getenv("PVM_TEST_NEWS_REFRESH_SECONDS")) {
         service->setRefreshIntervalSecondsForTesting(std::atoi(env));
     }
@@ -2297,18 +2162,18 @@ void App::initTeletextSection(TeletextSection& section, const std::string& exeDi
 // Same idea as initTeletextSection(), but for a MediathekViewWeb-backed
 // section's own config shape (a channel, favorites and the generated A-Z
 // window, see teletext/mvw_config.h) and service (teletext/mvw_service.h).
-void App::initMvwSection(TeletextSection& section, const std::string& exeDirectory, const std::string& baseName,
-                         const char* envVar) {
+void App::initMvwSection(TeletextSection& section, const std::string& dataDir, const std::string& assetDir,
+                         const std::string& baseName, const char* envVar) {
     teletext::MvwConfig config;
     std::vector<std::string> warnings;
 
     std::string path;
     if (const char* env = std::getenv(envVar)) {
         path = env;
-    } else if (fs::exists(exeDirectory + "/" + baseName + ".cfg")) {
-        path = exeDirectory + "/" + baseName + ".cfg";
+    } else if (fs::exists(dataDir + "/" + baseName + ".cfg")) {
+        path = dataDir + "/" + baseName + ".cfg";
     } else {
-        path = exeDirectory + "/" + baseName + ".default.cfg";
+        path = assetDir + "/" + baseName + ".default.cfg";
     }
     if (!teletext::loadMvwConfig(path, config, &warnings)) {
         std::fprintf(stderr, "[%s] no config at %s -- this section will have no favorites\n", baseName.c_str(),
@@ -2318,7 +2183,7 @@ void App::initMvwSection(TeletextSection& section, const std::string& exeDirecto
         std::fprintf(stderr, "[%s] %s\n", baseName.c_str(), w.c_str());
     }
 
-    auto service = std::make_unique<teletext::MvwService>(std::move(config), exeDirectory + "/cache/" + baseName);
+    auto service = std::make_unique<teletext::MvwService>(std::move(config), dataDir + "/cache/" + baseName);
     if (const char* env = std::getenv("PVM_TEST_NEWS_REFRESH_SECONDS")) {
         service->setRefreshIntervalSecondsForTesting(std::atoi(env));
     }
@@ -2351,7 +2216,7 @@ void App::openTeletext(int rootMenuIndex) {
 void App::renderTeletext() {
     teletext::Navigator& nav = activeTeletext_->nav;
     const teletext::TeletextDataService& service = *activeTeletext_->service;
-    nav.update(glfwGetTime());
+    nav.update(platform_->now());
 
     const std::shared_ptr<const teletext::PageStore> snapshot = service.snapshot();
     teletext::TeletextPage placeholder;
@@ -2402,26 +2267,16 @@ void App::onPlaybackStopped() {
     }
 }
 
-void App::keyCallback(GLFWwindow* window, int key, int scancode, int action, int /*mods*/) {
-    auto* app = static_cast<App*>(glfwGetWindowUserPointer(window));
-    if (app) {
-        app->dispatchKey(key, scancode, action);
-    }
-}
-
 void App::shutdown() {
+    reportFrameStats();
     // Joins the refresh threads (aborting any transfer in flight).
     newsSection_.service.reset();
     tagesschauSection_.service.reset();
     ardSection_.service.reset();
     zdfSection_.service.reset();
-#ifdef __APPLE__
-    macos_media_keys::shutdown();
-    macos_sleep_guard::shutdown();
-#endif
     if (imguiInitialized_) {
         ImGui_ImplOpenGL3_Shutdown();
-        ImGui_ImplGlfw_Shutdown();
+        platform_->imguiShutdown();
         ImGui::DestroyContext();
         imguiInitialized_ = false;
     }
@@ -2439,9 +2294,4 @@ void App::shutdown() {
         blitProgram_ = 0;
     }
     mpv_.shutdown();
-    if (window_) {
-        glfwDestroyWindow(window_);
-        window_ = nullptr;
-        glfwTerminate();
-    }
 }
