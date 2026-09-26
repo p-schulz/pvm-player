@@ -8,8 +8,9 @@
 #   cacert.pem                Mozilla's CA bundle, for HTTPS streams
 #
 # Without these the Android build still compiles, with playback disabled.
-# Run it once, from anywhere:  android/fetch_libmpv.sh
+# Run it once, from anywhere:  android/fetch_libmpv.sh   (--force to download again)
 # PVM_THIRDPARTY=<dir> changes where thirdparty/ is (default: the repository's).
+# fetch_libmpv.ps1 does the same on Windows; keep the pinned versions in sync.
 set -eu
 
 MEDIA_KIT_TAG=v1.1.11
@@ -19,6 +20,14 @@ MPV_TAG=v0.36.0
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="${PVM_THIRDPARTY:-$ROOT/thirdparty}/libmpv-android"
+
+if [ "${1:-}" != "--force" ] &&
+   [ -f "$DEST/lib/arm64-v8a/libmpv.so" ] && [ -f "$DEST/include/mpv/client.h" ] &&
+   [ -f "$DEST/include/mpv/render.h" ] && [ -f "$DEST/include/mpv/render_gl.h" ] &&
+   [ -f "$DEST/cacert.pem" ]; then
+    echo "libmpv for Android is already in $DEST (use --force to download again)"
+    exit 0
+fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 

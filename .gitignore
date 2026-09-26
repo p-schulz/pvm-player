@@ -14,3 +14,9 @@
 
 # Built APKs for sideloading
 /dist/
+
+# Desktop build output and what scripts/setup.sh / setup.ps1 generate for this machine
+/build/
+/CMakeUserPresets.json
+/.vscode/
+/thirdparty/libmpv/

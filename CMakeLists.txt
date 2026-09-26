@@ -20,6 +20,16 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
 endif()
 
+# Executables land directly in the build directory whatever the generator:
+# multi-config ones (Visual Studio, Xcode) would otherwise add a per-config
+# subfolder, which every build and run instruction would then have to know.
+if(NOT ANDROID)
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+  foreach(config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${config} ${CMAKE_BINARY_DIR})
+  endforeach()
+endif()
+
 # ---------------------------------------------------------------------------
 # Dependencies
 # ---------------------------------------------------------------------------
@@ -84,9 +94,17 @@ if(NOT ANDROID)
     add_library(mpv INTERFACE)
     target_include_directories(mpv INTERFACE ${CMAKE_SOURCE_DIR}/thirdparty/libmpv/include)
     if(WIN32)
-      target_link_libraries(mpv INTERFACE ${CMAKE_SOURCE_DIR}/thirdparty/libmpv/libmpv.dll.a)
-    else()
+      # MSVC wants a native import library (scripts/setup.ps1 generates
+      # mpv.lib from the SDK's mpv.def); MinGW links the SDK's libmpv.dll.a.
+      if(MSVC AND EXISTS ${CMAKE_SOURCE_DIR}/thirdparty/libmpv/mpv.lib)
+        target_link_libraries(mpv INTERFACE ${CMAKE_SOURCE_DIR}/thirdparty/libmpv/mpv.lib)
+      else()
+        target_link_libraries(mpv INTERFACE ${CMAKE_SOURCE_DIR}/thirdparty/libmpv/libmpv.dll.a)
+      endif()
+    elseif(APPLE)
       target_link_libraries(mpv INTERFACE ${CMAKE_SOURCE_DIR}/thirdparty/libmpv/libmpv.dylib)
+    else()
+      target_link_libraries(mpv INTERFACE ${CMAKE_SOURCE_DIR}/thirdparty/libmpv/libmpv.so)
     endif()
     message(STATUS "Using vendored libmpv from thirdparty/libmpv")
   else()
@@ -297,6 +315,16 @@ else()
       "-framework IOKit"
     )
     target_compile_definitions(pvm_player PRIVATE GL_SILENCE_DEPRECATION)
+  endif()
+
+  if(WIN32 AND EXISTS ${CMAKE_SOURCE_DIR}/thirdparty/libmpv/include/mpv/client.h)
+    # A vendored libmpv SDK ships its DLL beside the import library; the
+    # executable needs it next to itself at run time.
+    file(GLOB PVM_MPV_DLLS ${CMAKE_SOURCE_DIR}/thirdparty/libmpv/*.dll)
+    foreach(dll ${PVM_MPV_DLLS})
+      add_custom_command(TARGET pvm_player POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${dll} $<TARGET_FILE_DIR:pvm_player>)
+    endforeach()
   endif()
 
   # Copy shader/asset files next to the built executable so they resolve via
