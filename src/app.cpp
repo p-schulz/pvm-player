@@ -92,8 +92,16 @@ std::vector<std::string> parseSimulatedKeys() {
 }
 
 void saveScreenshotPPM(const char* path, int width, int height) {
+    // RGBA + UNSIGNED_BYTE is the one glReadPixels combination every GL and
+    // GLES implementation supports; the alpha channel is dropped below.
+    std::vector<unsigned char> rgba(static_cast<size_t>(width) * height * 4);
+    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
     std::vector<unsigned char> pixels(static_cast<size_t>(width) * height * 3);
-    glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
+    for (size_t i = 0, n = static_cast<size_t>(width) * height; i < n; ++i) {
+        pixels[i * 3 + 0] = rgba[i * 4 + 0];
+        pixels[i * 3 + 1] = rgba[i * 4 + 1];
+        pixels[i * 3 + 2] = rgba[i * 4 + 2];
+    }
 
     std::FILE* f = std::fopen(path, "wb");
     if (!f) {
@@ -524,13 +532,19 @@ std::string App::resolveFontPath() const {
 
 void App::loadSelectedFontIntoAtlas() {
     ImGuiIO& io = ImGui::GetIO();
+    // AddFontFromFileTTF() asserts (aborting debug builds) on a file that
+    // isn't there, so only hand it paths that exist.
+    auto addFont = [&](const std::string& path) {
+        std::error_code ec;
+        return fs::is_regular_file(path, ec) &&
+               io.Fonts->AddFontFromFileTTF(path.c_str(), static_cast<float>(fontSizePx_)) != nullptr;
+    };
     const std::string path = resolveFontPath();
-    if (io.Fonts->AddFontFromFileTTF(path.c_str(), static_cast<float>(fontSizePx_))) {
+    if (addFont(path)) {
         return;
     }
     std::fprintf(stderr, "Failed to load font %s, falling back to bundled default\n", path.c_str());
-    if (path != fontPath_ &&
-        io.Fonts->AddFontFromFileTTF(fontPath_.c_str(), static_cast<float>(fontSizePx_))) {
+    if (path != fontPath_ && addFont(fontPath_)) {
         selectedFontChoiceIndex_ = 0;
         selectedFontFile_.clear();
         return;
