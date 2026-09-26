@@ -75,6 +75,16 @@ struct AppSettings {
     // Which monitor fullscreen uses: 0 = Primary (default), 1..N = a
     // specific connected monitor; see App::resolveMonitor().
     int monitorIndex = 0;
+
+    // Android: when the app is started from a launcher on another display
+    // (the bottom screen of a dual-screen handheld), move it to the primary
+    // display. Read by the Java launcher before the native code starts, so the
+    // key name in config.cfg ("launch_on_top_screen") is shared with it.
+    bool launchOnTopScreen = true;
+
+    // Decode video with the platform's hardware decoder (see
+    // Platform::defaultHardwareDecoding() for the default).
+    bool hardwareDecoding = false;
 };
 
 // Reads `path` and overwrites the matching fields of `settings` for any

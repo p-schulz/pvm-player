@@ -1,6 +1,6 @@
 #include "shader.h"
 
-#include <glad/gl.h>
+#include "gl.h"
 
 #include <cstdio>
 #include <fstream>
@@ -21,7 +21,21 @@ bool readFile(const std::string& path, std::string& outContents) {
     return true;
 }
 
-unsigned int compile(GLenum type, const std::string& source, const std::string& debugName) {
+// The shader sources are written once, for desktop GL 3.3 core. GLES 3.0 is
+// the same language apart from the version line and the mandatory default
+// float precision, so on Android swap that one line at load time.
+std::string adaptForPlatform(const std::string& source) {
+#if defined(__ANDROID__)
+    const std::string desktopVersion = "#version 330 core";
+    if (source.compare(0, desktopVersion.size(), desktopVersion) == 0) {
+        return "#version 300 es\nprecision highp float;\n" + source.substr(desktopVersion.size());
+    }
+#endif
+    return source;
+}
+
+unsigned int compile(GLenum type, const std::string& rawSource, const std::string& debugName) {
+    const std::string source = adaptForPlatform(rawSource);
     unsigned int shader = glCreateShader(type);
     const char* src = source.c_str();
     glShaderSource(shader, 1, &src, nullptr);

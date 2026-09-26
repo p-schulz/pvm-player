@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.PVMPlayer" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+
+    <!-- LaunchActivity draws nothing and finishes at once. -->
+    <style name="Theme.PVMPlayer.Launch" parent="@android:style/Theme.NoDisplay" />
+</resources>

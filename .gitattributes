@@ -1,0 +1,4 @@
+# Keep line endings right for the scripts each platform runs.
+*.sh   text eol=lf
+*.bat  text eol=crlf
+*.ps1  text eol=crlf

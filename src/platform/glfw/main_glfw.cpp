@@ -2,10 +2,18 @@
 #include <vector>
 
 #include "app.h"
+#include "platform/glfw/glfw_platform.h"
 
 int main(int argc, char** argv) {
+    // Declared first, destroyed last: App tears its GL and mpv state down
+    // against the platform's still-live window.
+    GlfwPlatform platform;
+    if (!platform.init(1280, 720, "PVM Player")) {
+        return 1;
+    }
+
     App app;
-    if (!app.init(1280, 720, "PVM Player")) {
+    if (!app.init(platform)) {
         return 1;
     }
 
@@ -22,6 +30,12 @@ int main(int argc, char** argv) {
     }
     app.setMediaRoots(roots);
 
-    app.run();
+    std::vector<input::InputEvent> events;
+    while (!platform.quitRequested()) {
+        events.clear();
+        platform.pollEvents(events);
+        app.frame(events);
+        platform.swapBuffers();
+    }
     return 0;
 }

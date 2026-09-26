@@ -11,8 +11,8 @@
 // GLFW/OpenGL window instead of letting mpv own a window, so mpv's own
 // inhibition never engages. Hence a small IOKit assertion of our own --
 // Apple-only, hence the separate header with no IOKit types leaking into
-// the rest of the (portable) app; callers elsewhere in the codebase guard
-// use of this with #ifdef __APPLE__, same as macos_media_keys.h.
+// the rest of the (portable) app; only the GLFW platform
+// (platform/glfw) uses this, behind #ifdef __APPLE__.
 namespace macos_sleep_guard {
 
 // Holds (or releases) a display-idle-sleep assertion so it matches
