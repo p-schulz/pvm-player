@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "input/input_action.h"
+#include "input/keymap.h"
 #include "mpv_player.h"
 #include "teletext/data_service.h"
 #include "teletext/navigator.h"
@@ -184,8 +186,14 @@ private:
     void applyFont();  // rebuilds the ImGui font atlas from fontSizePx_ + selectedFontFile_
     void saveCurrentSettings() const;
 
-    void handleKey(int key, int scancode, int action);
-    void handleTeletextKey(int key, int action);
+    // Raw GLFW key event -> actions via keyMap_ -> handleInput(). The only
+    // place key codes are interpreted; everything below works on actions.
+    void dispatchKey(int key, int scancode, int glfwAction);
+    void handleInput(const input::InputEvent& event);
+    void handleTeletextInput(const input::InputEvent& event);
+    // keyMap_ = the GLFW defaults plus any overrides from keys.cfg next to
+    // the executable (see conf/keys.example.cfg).
+    void loadKeyMap(const std::string& exeDirectory);
     void openTeletext(int rootMenuIndex);
     // Enter on a teletext page: acts on activeTeletext_->nav's selected
     // RowLink -- a page link jumps there, a play link loads it into the
@@ -202,6 +210,7 @@ private:
     static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
 
     GLFWwindow* window_ = nullptr;
+    input::KeyMap keyMap_;
     MpvPlayer mpv_;
 
     // Fullscreen ("Fullscreen" settings row, persisted -- also what makes

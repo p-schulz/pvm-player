@@ -146,6 +146,22 @@ add_executable(teletext_selftest tests/teletext_selftest.cpp)
 target_link_libraries(teletext_selftest PRIVATE teletext_core)
 add_test(NAME teletext_selftest COMMAND teletext_selftest)
 
+# Platform-free input vocabulary (actions, key maps) plus the GLFW key
+# translation. input_core has no GLFW dependency so the Android build can
+# reuse it; input_glfw only needs GLFW's key constants.
+add_library(input_core STATIC
+  src/input/input_action.cpp
+  src/input/keymap.cpp
+)
+target_include_directories(input_core PUBLIC src)
+
+add_library(input_glfw STATIC src/platform/glfw/keymap_glfw.cpp)
+target_link_libraries(input_glfw PUBLIC input_core glfw)
+
+add_executable(input_selftest tests/input_selftest.cpp)
+target_link_libraries(input_selftest PRIVATE input_glfw)
+add_test(NAME input_selftest COMMAND input_selftest)
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
@@ -164,7 +180,7 @@ add_executable(pvm_player
 
 target_include_directories(pvm_player PRIVATE src)
 
-target_link_libraries(pvm_player PRIVATE glfw glad mpv imgui teletext_core)
+target_link_libraries(pvm_player PRIVATE glfw glad mpv imgui teletext_core input_glfw)
 
 if(APPLE)
   # macos_media_keys.mm: hooks the hardware Play/Pause media key via a

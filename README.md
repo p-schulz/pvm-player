@@ -74,6 +74,11 @@ for everyday use.
 | ← / →                 | Seek ±5s (playback) or adjust a setting     |
 | C                     | Toggle the CRT effect                      |
 
+Keys are remappable: copy `conf/keys.example.cfg` to `keys.cfg` next to
+the executable and change the lines you need. Input goes through a
+platform-free action layer (`src/input/`), so the same bindings file
+format serves keyboards, remotes and, later, gamepads.
+
 ## NEWS (teletext)
 
 The root menu's **NEWS**, **TAGESSCHAU** and **ARD** entries each open a

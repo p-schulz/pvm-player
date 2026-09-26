@@ -13,11 +13,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <optional>
 #include <ctime>
 #include <sstream>
 #include <vector>
 
 #include "paths.h"
+#include "platform/glfw/keymap_glfw.h"
 #include "settings.h"
 #include "shader.h"
 #include "teletext/mvw_config.h"
@@ -74,7 +77,7 @@ bool exerciseControlsRequested() {
 
 // Optional test hook: PVM_TEST_SIMULATE_KEYS is a comma-separated list of
 // key names (UP, DOWN, LEFT, RIGHT, ENTER, ESCAPE, SPACE, BACKSPACE). One
-// key is dispatched through the real App::handleKey() path every
+// key is dispatched through the real App::dispatchKey() path every
 // kSimulateIntervalFrames frames, so full keyboard-only navigation --
 // menu -> file browser -> playback -> back to menu -- can be regression
 // tested without a human at the keyboard.
@@ -380,6 +383,7 @@ bool App::init(int width, int height, const char* title) {
     }
 
     const std::string dir = exeDir();
+    loadKeyMap(dir);
 
     fontPath_ = dir + "/assets/fonts/JetBrainsMono-Regular.ttf";
     fontsDir_ = dir + "/assets/fonts";
@@ -650,7 +654,7 @@ void App::applyFont() {
     loadSelectedFontIntoAtlas();
     // Rebuild the backend's GL device objects (including the font atlas
     // texture) from the new bake. Safe here: always called from
-    // handleKey(), i.e. during glfwPollEvents() at the top of the frame,
+    // handleInput(), i.e. during glfwPollEvents() at the top of the frame,
     // before this frame's ImGui::NewFrame()/Render().
     ImGui_ImplOpenGL3_DestroyDeviceObjects();
     ImGui_ImplOpenGL3_CreateDeviceObjects();
@@ -795,7 +799,7 @@ void App::run() {
             if (idx < simulatedKeys.size()) {
                 std::fprintf(stdout, "[test] simulate key #%zu = %d (screen=%d)\n", idx,
                              simulatedKeys[idx], static_cast<int>(screen_));
-                handleKey(simulatedKeys[idx], 0, GLFW_PRESS);
+                dispatchKey(simulatedKeys[idx], 0, GLFW_PRESS);
             }
         }
 
@@ -1838,7 +1842,7 @@ void App::adjustSettingsRow(SettingsRowDesc& row, int direction) {
             break;
         }
         case SettingsRowType::Action:
-            break;  // not adjustable via LEFT/RIGHT; ENTER invokes onActivate (see handleKey)
+            break;  // not adjustable via LEFT/RIGHT; Confirm invokes onActivate (see handleInput)
     }
 }
 
@@ -1884,37 +1888,71 @@ void App::enterFileBrowser(std::vector<std::string> extensions) {
     screen_ = Screen::FileBrowser;
 }
 
-void App::handleKey(int key, int scancode, int action) {
-    if (action != GLFW_PRESS && action != GLFW_REPEAT) {
+void App::loadKeyMap(const std::string& exeDirectory) {
+    keyMap_ = input::glfw::defaultKeyMap();
+    const std::string path = exeDirectory + "/keys.cfg";
+    std::ifstream file(path);
+    if (!file) {
+        return;  // optional; the defaults cover every action
+    }
+    for (const std::string& warning : keyMap_.loadOverrides(file, input::glfw::codeFromName, path)) {
+        std::fprintf(stderr, "%s\n", warning.c_str());
+    }
+    std::fprintf(stdout, "Loaded key bindings from %s\n", path.c_str());
+}
+
+void App::dispatchKey(int key, int scancode, int glfwAction) {
+    const std::optional<input::Phase> phase = input::glfw::phaseFromGlfwAction(glfwAction);
+    if (!phase) {
         return;
     }
+    // One physical key may emit several actions (B = aspect ratio while
+    // playing, blue on a teletext page); each screen reacts to at most one.
+    // Copied because a handler could in principle rebind keys.
+    const std::vector<input::Action> actions = keyMap_.actionsFor(input::glfw::inputCode(key, scancode));
+    for (const input::Action action : actions) {
+        handleInput(input::InputEvent{action, *phase});
+    }
+}
+
+void App::handleInput(const input::InputEvent& event) {
+    using input::Action;
+
+    if (event.phase == input::Phase::Release) {
+        return;
+    }
+    const Action action = event.action;
+    // One-shot actions (activate, leave, toggles) fire on the initial press
+    // only; movement, seeking, volume and value adjustment also auto-repeat.
+    const bool pressed = event.phase == input::Phase::Press;
 
     // Global debug toggle, available on every screen: flips the CRT
     // post-process pass on/off without a restart.
-    if (key == GLFW_KEY_C && action == GLFW_PRESS) {
-        crtEnabled_ = !crtEnabled_;
-        std::fprintf(stdout, "CRT effect: %s\n", crtEnabled_ ? "on" : "off");
-        saveCurrentSettings();
+    if (action == Action::ToggleCrt) {
+        if (pressed) {
+            crtEnabled_ = !crtEnabled_;
+            std::fprintf(stdout, "CRT effect: %s\n", crtEnabled_ ? "on" : "off");
+            saveCurrentSettings();
+        }
         return;
     }
 
     switch (screen_) {
         case Screen::RootMenu:
-            switch (key) {
-                case GLFW_KEY_UP:
+            switch (action) {
+                case Action::Up:
                     rootMenu_.moveUp();
                     break;
-                case GLFW_KEY_DOWN:
+                case Action::Down:
                     rootMenu_.moveDown();
                     break;
-                case GLFW_KEY_ENTER:
-                case GLFW_KEY_KP_ENTER:
-                    if (action == GLFW_PRESS) {
+                case Action::Confirm:
+                    if (pressed) {
                         activateRootMenuItem(rootMenu_.selectedIndex());
                     }
                     break;
-                case GLFW_KEY_ESCAPE:
-                    if (action == GLFW_PRESS) {
+                case Action::Back:
+                    if (pressed) {
                         glfwSetWindowShouldClose(window_, GLFW_TRUE);
                     }
                     break;
@@ -1924,16 +1962,15 @@ void App::handleKey(int key, int scancode, int action) {
             break;
 
         case Screen::FileBrowser:
-            switch (key) {
-                case GLFW_KEY_UP:
+            switch (action) {
+                case Action::Up:
                     fileBrowser_.moveUp();
                     break;
-                case GLFW_KEY_DOWN:
+                case Action::Down:
                     fileBrowser_.moveDown();
                     break;
-                case GLFW_KEY_ENTER:
-                case GLFW_KEY_KP_ENTER:
-                    if (action == GLFW_PRESS && !fileBrowser_.empty()) {
+                case Action::Confirm:
+                    if (pressed && !fileBrowser_.empty()) {
                         if (fileBrowser_.selectedIsDirectory()) {
                             fileBrowser_.enterSelectedDirectory();
                         } else {
@@ -1948,9 +1985,9 @@ void App::handleKey(int key, int scancode, int action) {
                         }
                     }
                     break;
-                case GLFW_KEY_ESCAPE:
-                case GLFW_KEY_BACKSPACE:
-                    if (action == GLFW_PRESS && !fileBrowser_.goBack()) {
+                case Action::Back:
+                case Action::BackSoft:
+                    if (pressed && !fileBrowser_.goBack()) {
                         screen_ = Screen::RootMenu;
                     }
                     break;
@@ -1962,37 +1999,32 @@ void App::handleKey(int key, int scancode, int action) {
         case Screen::Settings: {
             std::vector<SettingsRowDesc> rows = buildSettingsRows();
             const int rowCount = static_cast<int>(rows.size());
-            switch (key) {
-                case GLFW_KEY_UP:
+            switch (action) {
+                case Action::Up:
                     settingsSelectedRow_ = std::max(0, settingsSelectedRow_ - 1);
                     break;
-                case GLFW_KEY_DOWN:
+                case Action::Down:
                     settingsSelectedRow_ = std::min(rowCount - 1, settingsSelectedRow_ + 1);
                     break;
-                case GLFW_KEY_LEFT:
+                case Action::Left:
+                case Action::Right:
                     if (settingsSelectedRow_ >= 0 && settingsSelectedRow_ < rowCount) {
-                        adjustSettingsRow(rows[static_cast<size_t>(settingsSelectedRow_)], -1);
+                        adjustSettingsRow(rows[static_cast<size_t>(settingsSelectedRow_)],
+                                          action == Action::Left ? -1 : 1);
                         saveCurrentSettings();
                     }
                     break;
-                case GLFW_KEY_RIGHT:
-                    if (settingsSelectedRow_ >= 0 && settingsSelectedRow_ < rowCount) {
-                        adjustSettingsRow(rows[static_cast<size_t>(settingsSelectedRow_)], 1);
-                        saveCurrentSettings();
-                    }
-                    break;
-                case GLFW_KEY_ENTER:
-                case GLFW_KEY_KP_ENTER:
-                    if (action == GLFW_PRESS && settingsSelectedRow_ >= 0 && settingsSelectedRow_ < rowCount) {
+                case Action::Confirm:
+                    if (pressed && settingsSelectedRow_ >= 0 && settingsSelectedRow_ < rowCount) {
                         const SettingsRowDesc& row = rows[static_cast<size_t>(settingsSelectedRow_)];
                         if (row.type == SettingsRowType::Action && row.onActivate) {
                             row.onActivate();
                         }
                     }
                     break;
-                case GLFW_KEY_ESCAPE:
-                case GLFW_KEY_BACKSPACE:
-                    if (action == GLFW_PRESS) {
+                case Action::Back:
+                case Action::BackSoft:
+                    if (pressed) {
                         screen_ = Screen::RootMenu;
                     }
                     break;
@@ -2003,16 +2035,15 @@ void App::handleKey(int key, int scancode, int action) {
         }
 
         case Screen::PickStartDirectory:
-            switch (key) {
-                case GLFW_KEY_UP:
+            switch (action) {
+                case Action::Up:
                     fileBrowser_.moveUp();
                     break;
-                case GLFW_KEY_DOWN:
+                case Action::Down:
                     fileBrowser_.moveDown();
                     break;
-                case GLFW_KEY_ENTER:
-                case GLFW_KEY_KP_ENTER:
-                    if (action == GLFW_PRESS && !fileBrowser_.empty()) {
+                case Action::Confirm:
+                    if (pressed && !fileBrowser_.empty()) {
                         if (fileBrowser_.selectedIsPickHere()) {
                             startDirectory_ = fileBrowser_.currentPathLabel();
                             lastUsedDirectory_.clear();  // an explicit new start dir takes priority
@@ -2023,9 +2054,9 @@ void App::handleKey(int key, int scancode, int action) {
                         }
                     }
                     break;
-                case GLFW_KEY_ESCAPE:
-                case GLFW_KEY_BACKSPACE:
-                    if (action == GLFW_PRESS && !fileBrowser_.goBack()) {
+                case Action::Back:
+                case Action::BackSoft:
+                    if (pressed && !fileBrowser_.goBack()) {
                         screen_ = Screen::Settings;
                     }
                     break;
@@ -2035,53 +2066,50 @@ void App::handleKey(int key, int scancode, int action) {
             break;
 
         case Screen::News:
-            handleTeletextKey(key, action);
+            handleTeletextInput(event);
             break;
 
         case Screen::Playing:
-            if (key == GLFW_KEY_M || key == GLFW_KEY_I && action == GLFW_PRESS) {
-                osdMenuVisible_ = !osdMenuVisible_;
-                osdSelectedRow_ = 0;
+            if (action == Action::ToggleOsd) {
+                if (pressed) {
+                    osdMenuVisible_ = !osdMenuVisible_;
+                    osdSelectedRow_ = 0;
+                }
                 break;
             }
 
             if (osdMenuVisible_) {
-                // The OSD captures UP/DOWN/LEFT/RIGHT/ENTER while open --
-                // normal seek/pause/stop below don't run. ESC closes the
-                // OSD rather than falling through to "stop playback", so
-                // "back" backs out of the overlay first.
+                // The OSD captures navigation while open -- normal
+                // seek/pause/stop below don't run. Back closes the OSD
+                // rather than stopping playback, so "back" backs out of the
+                // overlay first.
                 std::vector<SettingsRowDesc> osdRows = buildOsdRows();
                 const int osdRowCount = static_cast<int>(osdRows.size());
-                switch (key) {
-                    case GLFW_KEY_UP:
+                switch (action) {
+                    case Action::Up:
                         osdSelectedRow_ = std::max(0, osdSelectedRow_ - 1);
                         break;
-                    case GLFW_KEY_DOWN:
+                    case Action::Down:
                         osdSelectedRow_ = std::min(osdRowCount - 1, osdSelectedRow_ + 1);
                         break;
-                    case GLFW_KEY_LEFT:
+                    case Action::Left:
+                    case Action::Right:
                         if (osdSelectedRow_ >= 0 && osdSelectedRow_ < osdRowCount) {
-                            adjustSettingsRow(osdRows[static_cast<size_t>(osdSelectedRow_)], -1);
+                            adjustSettingsRow(osdRows[static_cast<size_t>(osdSelectedRow_)],
+                                              action == Action::Left ? -1 : 1);
                             saveCurrentSettings();
                         }
                         break;
-                    case GLFW_KEY_RIGHT:
-                        if (osdSelectedRow_ >= 0 && osdSelectedRow_ < osdRowCount) {
-                            adjustSettingsRow(osdRows[static_cast<size_t>(osdSelectedRow_)], 1);
-                            saveCurrentSettings();
-                        }
-                        break;
-                    case GLFW_KEY_ENTER:
-                    case GLFW_KEY_KP_ENTER:
-                        if (action == GLFW_PRESS && osdSelectedRow_ >= 0 && osdSelectedRow_ < osdRowCount) {
+                    case Action::Confirm:
+                        if (pressed && osdSelectedRow_ >= 0 && osdSelectedRow_ < osdRowCount) {
                             const SettingsRowDesc& row = osdRows[static_cast<size_t>(osdSelectedRow_)];
                             if (row.type == SettingsRowType::Action && row.onActivate) {
                                 row.onActivate();
                             }
                         }
                         break;
-                    case GLFW_KEY_ESCAPE:
-                        if (action == GLFW_PRESS) {
+                    case Action::Back:
+                        if (pressed) {
                             osdMenuVisible_ = false;
                         }
                         break;
@@ -2091,42 +2119,22 @@ void App::handleKey(int key, int scancode, int action) {
                 break;
             }
 
-            switch (key) {
-                case GLFW_KEY_SPACE:
-                    if (action == GLFW_PRESS) {
+            switch (action) {
+                case Action::PlayPause:
+                    if (pressed) {
                         mpv_.togglePause();
                     }
                     break;
-#ifdef _WIN32
-                case GLFW_KEY_UNKNOWN:
-                    // The hardware Play/Pause media key: Windows delivers
-                    // it as a normal WM_KEYDOWN with no virtual-key GLFW
-                    // recognizes, so it surfaces here as GLFW_KEY_UNKNOWN
-                    // -- the key itself is identified by `scancode`, which
-                    // GLFW always derives from the raw PS/2 Scan Code Set
-                    // 1 (HIWORD(lParam) & (KF_EXTENDED | 0xff) in GLFW's
-                    // own win32_window.c), *not* the Win32 virtual-key
-                    // code (VK_MEDIA_PLAY_PAUSE = 0xB3 never appears here).
-                    // 0x122 is that key's well-documented Set-1 code (0x22
-                    // with GLFW's extended-key bit, 0x100, folded in).
-                    if (action == GLFW_PRESS && scancode == 0x122) {
-                        mpv_.togglePause();
-                    }
-                    break;
-#endif
-                case GLFW_KEY_F:
-                    if (action == GLFW_PRESS) {
-                        mpv_.togglePause();
-                    }
-                    break;
-                case GLFW_KEY_LEFT:
+                case Action::Left:
+                case Action::SeekBack:
                     mpv_.seekRelative(-5.0);
                     break;
-                case GLFW_KEY_RIGHT:
+                case Action::Right:
+                case Action::SeekFwd:
                     mpv_.seekRelative(5.0);
                     break;
-                case GLFW_KEY_V:
-                    if (action == GLFW_PRESS) {
+                case Action::VideoScale:
+                    if (pressed) {
                         const int count = static_cast<int>(kVideoScaleModeNames.size());
                         videoScaleModeIndex_ = (videoScaleModeIndex_ + 1) % count;
                         std::fprintf(stdout, "Video scale: %s\n",
@@ -2134,8 +2142,8 @@ void App::handleKey(int key, int scancode, int action) {
                         saveCurrentSettings();
                     }
                     break;
-                case GLFW_KEY_B:
-                    if (action == GLFW_PRESS) {
+                case Action::AspectRatio:
+                    if (pressed) {
                         const int count = static_cast<int>(kAspectRatioNames.size());
                         aspectOverrideIndex_ = (aspectOverrideIndex_ + 1) % count;
                         mpv_.setAspectOverride(kAspectRatioValues[static_cast<size_t>(aspectOverrideIndex_)]);
@@ -2144,25 +2152,20 @@ void App::handleKey(int key, int scancode, int action) {
                         saveCurrentSettings();
                     }
                     break;
-                case GLFW_KEY_R:
-                    if (action == GLFW_PRESS) {
+                case Action::MediaInfo:
+                    if (pressed) {
                         mediaInfoVisible_ = !mediaInfoVisible_;
                     }
                     break;
-                case GLFW_KEY_COMMA:
-                    volume_ = std::clamp(volume_ - 5, 0, 100);
+                case Action::VolumeDown:
+                case Action::VolumeUp:
+                    volume_ = std::clamp(volume_ + (action == Action::VolumeUp ? 5 : -5), 0, 100);
                     mpv_.setVolume(volume_);
                     volumeIndicatorHideAtTime_ = glfwGetTime() + 2.0;
                     saveCurrentSettings();
                     break;
-                case GLFW_KEY_PERIOD:
-                    volume_ = std::clamp(volume_ + 5, 0, 100);
-                    mpv_.setVolume(volume_);
-                    volumeIndicatorHideAtTime_ = glfwGetTime() + 2.0;
-                    saveCurrentSettings();
-                    break;
-                case GLFW_KEY_ESCAPE:
-                    if (action == GLFW_PRESS) {
+                case Action::Back:
+                    if (pressed) {
                         mpv_.stop();
                         onPlaybackStopped();
                     }
@@ -2175,69 +2178,60 @@ void App::handleKey(int key, int scancode, int action) {
 }
 
 // Up/Down = move the highlighted selection among the current page's links
-// (a headline, a category, a show, an episode); Enter activates it -- a
+// (a headline, a category, a show, an episode); Confirm activates it -- a
 // page link jumps there, a play link (ARD only) loads it into the player.
-// Left/Right = previous/next page number. The colored keys of the bottom
-// bar (F1-F4, or R/G/Y/B): red "-" previous page, green "+" next page
-// (same as Left/Right), yellow "News" (or M) the index page 100, blue
+// Left/Right = previous/next page number. The colour keys of the bottom bar
+// (F1-F4 or R/G/Y/B on a keyboard): red "-" previous page, green "+" next
+// page (same as Left/Right), yellow "News" (or M) the index page 100, blue
 // "Refresh" re-fetches this section right now. Digits (main row or keypad
-// -- the Xbox 360 remote sends the latter) = direct page entry; ESC/
-// Backspace = back: abandon a half-typed number, else climb a level, else
+// -- the Xbox 360 remote sends the latter) = direct page entry; Back/
+// BackSoft = back: abandon a half-typed number, else climb a level, else
 // leave the section.
-void App::handleTeletextKey(int key, int action) {
+void App::handleTeletextInput(const input::InputEvent& event) {
+    using input::Action;
+
     teletext::Navigator& nav = activeTeletext_->nav;
     teletext::TeletextDataService& service = *activeTeletext_->service;
     const std::shared_ptr<const teletext::PageStore> snapshot = service.snapshot();
     const teletext::PageStore& store = *snapshot;
     const teletext::TeletextPage* page = store.find(nav.currentPage(), nav.currentSubPage());
     const int linkCount = page ? static_cast<int>(page->links.size()) : 0;
+    const bool pressed = event.phase == input::Phase::Press;
 
-    if (key >= GLFW_KEY_0 && key <= GLFW_KEY_9) {
-        if (action == GLFW_PRESS) {
-            nav.digit(key - GLFW_KEY_0, glfwGetTime());
-        }
-        return;
-    }
-    if (key >= GLFW_KEY_KP_0 && key <= GLFW_KEY_KP_9) {
-        if (action == GLFW_PRESS) {
-            nav.digit(key - GLFW_KEY_KP_0, glfwGetTime());
+    if (const int digit = input::digitOf(event.action); digit >= 0) {
+        if (pressed) {
+            nav.digit(digit, glfwGetTime());
         }
         return;
     }
 
-    switch (key) {
-        case GLFW_KEY_UP:
+    switch (event.action) {
+        case Action::Up:
             nav.selectLink(-1, linkCount);
             break;
-        case GLFW_KEY_DOWN:
+        case Action::Down:
             nav.selectLink(1, linkCount);
             break;
-        case GLFW_KEY_LEFT:
-        case GLFW_KEY_F1:  // red "-"
-        case GLFW_KEY_R:
+        case Action::Left:
+        case Action::FastextRed:
             nav.stepPage(store, -1);
             break;
-        case GLFW_KEY_RIGHT:
-        case GLFW_KEY_F2:  // green "+"
-        case GLFW_KEY_G:
+        case Action::Right:
+        case Action::FastextGreen:
             nav.stepPage(store, 1);
             break;
-        case GLFW_KEY_F3:  // yellow "News"
-        case GLFW_KEY_Y:
-        case GLFW_KEY_M:   // "menu": back to page 100 from anywhere
-            if (action == GLFW_PRESS) nav.goTo(teletext::kIndexPage);
+        case Action::FastextYellow:
+            if (pressed) nav.goTo(teletext::kIndexPage);
             break;
-        case GLFW_KEY_F4:  // blue "Refresh"
-        case GLFW_KEY_B:
-            if (action == GLFW_PRESS) service.requestRefresh();
+        case Action::FastextBlue:
+            if (pressed) service.requestRefresh();
             break;
-        case GLFW_KEY_ENTER:
-        case GLFW_KEY_KP_ENTER:
-            if (action == GLFW_PRESS) activateTeletextSelection();
+        case Action::Confirm:
+            if (pressed) activateTeletextSelection();
             break;
-        case GLFW_KEY_ESCAPE:
-        case GLFW_KEY_BACKSPACE:
-            if (action == GLFW_PRESS && !nav.back(store)) {
+        case Action::Back:
+        case Action::BackSoft:
+            if (pressed && !nav.back(store)) {
                 screen_ = Screen::RootMenu;
             }
             break;
@@ -2411,7 +2405,7 @@ void App::onPlaybackStopped() {
 void App::keyCallback(GLFWwindow* window, int key, int scancode, int action, int /*mods*/) {
     auto* app = static_cast<App*>(glfwGetWindowUserPointer(window));
     if (app) {
-        app->handleKey(key, scancode, action);
+        app->dispatchKey(key, scancode, action);
     }
 }
 
