@@ -18,6 +18,9 @@ std::vector<AnalogBinding> defaultAnalogBindings() {
         {PadAxis::RightY, +1, Action::VolumeDown, 0.5f, kStickDeadzone},
         {PadAxis::RightY, -1, Action::ScrollUp, 1.0f, kStickDeadzone},
         {PadAxis::RightY, +1, Action::ScrollDown, 1.0f, kStickDeadzone},
+        // In a game the triggers are its L2 and R2 (held, so no repeats matter).
+        {PadAxis::LeftTrigger, +1, Action::RetroL2, 1.0f, kTriggerDeadzone},
+        {PadAxis::RightTrigger, +1, Action::RetroR2, 1.0f, kTriggerDeadzone},
     };
 }
 
@@ -63,8 +66,16 @@ void PadTranslator::keyDown(int code, double now) {
     state.downTime = now;
 
     if (!keyMap_.actionsFor(code | kHoldFlag).empty()) {
-        // Undecided until released (tap) or kHoldSeconds pass (hold).
+        // Undecided until released (tap) or kHoldSeconds pass (hold) -- except
+        // for held-state actions, which a game must see go down at once.
         state.holdPending = true;
+        beginGroup();
+        for (const Action action : keyMap_.actionsFor(code)) {
+            if (isRetroAction(action)) {
+                pressAction(action, now);
+            }
+        }
+        endGroup();
         return;
     }
     beginGroup();
@@ -84,10 +95,13 @@ void PadTranslator::keyUp(int code, double now) {
     state = HeldCode{};
 
     if (wasPending) {
-        // Short press: the deferred tap, as a press and a release.
+        // Short press: the deferred tap, as a press and a release (the
+        // held-state actions were pressed already, see keyDown()).
         beginGroup();
         for (const Action action : keyMap_.actionsFor(code)) {
-            pressAction(action, now);
+            if (!isRetroAction(action)) {
+                pressAction(action, now);
+            }
         }
         endGroup();
         for (const Action action : keyMap_.actionsFor(code)) {
@@ -96,6 +110,11 @@ void PadTranslator::keyUp(int code, double now) {
     } else if (holdFired) {
         for (const Action action : keyMap_.actionsFor(code | kHoldFlag)) {
             releaseAction(action);
+        }
+        for (const Action action : keyMap_.actionsFor(code)) {
+            if (isRetroAction(action)) {
+                releaseAction(action);
+            }
         }
     } else {
         for (const Action action : keyMap_.actionsFor(code)) {

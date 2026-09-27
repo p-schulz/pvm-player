@@ -60,6 +60,13 @@ bool MpvPlayer::createCore() {
     // Quiet by default; still surface real errors via checkMpvError().
     mpv_set_option_string(mpv_, "terminal", "no");
     mpv_set_option_string(mpv_, "vo", "libmpv");
+    // A live stream (TV, a Mediathek play link) that stops delivering data --
+    // an unreachable/geo-blocked CDN, a dead connection -- would otherwise
+    // leave mpv waiting on the network forever, i.e. a black screen that never
+    // recovers. This bounds that wait: past it, mpv fails the file with an
+    // error, which App already turns into a toast (and, for ARD, a retry on
+    // its second stream address). Harmless for local files, which never hit it.
+    mpv_set_option_string(mpv_, "network-timeout", "15");
 
 #if defined(__ANDROID__)
     // MediaCodec decodes in hardware and hands the frames back to be
@@ -249,6 +256,7 @@ void MpvPlayer::pollEvents() {
                     // A file that cannot be played ends playback like a
                     // finished one does, instead of leaving a black screen.
                     endOfFileFlag_ = true;
+                    playbackErrorFlag_ = true;
                 } else if (ef->reason == MPV_END_FILE_REASON_EOF) {
                     endOfFileFlag_ = true;
                 }
@@ -491,6 +499,12 @@ bool MpvPlayer::videoDisplaySize(int& width, int& height) const {
 bool MpvPlayer::consumeEndOfFile() {
     bool value = endOfFileFlag_;
     endOfFileFlag_ = false;
+    return value;
+}
+
+bool MpvPlayer::consumePlaybackError() {
+    bool value = playbackErrorFlag_;
+    playbackErrorFlag_ = false;
     return value;
 }
 

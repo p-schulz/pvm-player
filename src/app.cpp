@@ -285,7 +285,54 @@ const std::vector<std::string> kAspectRatioValues = {"no", "4:3", "5:4", "16:9",
 // Video scale mode cycled with 'V' during playback -- FIT (mpv's normal
 // letterbox/pillarbox), FILL (stretch to fill, distorting), CROP (uniform
 // zoom to fill, cropping overflow, no distortion). See App::renderFrame().
+// The root menu, top to bottom. Menu positions are looked up through this, so
+// reordering it is all it takes to reorder the menu.
+constexpr RootItem kRootItems[] = {RootItem::PlayMedia, RootItem::Tv,   RootItem::Tagesschau,
+                                   RootItem::News,      RootItem::Games, RootItem::Ard,
+                                   RootItem::Zdf,       RootItem::Settings, RootItem::Quit};
+
+const char* rootItemLabel(RootItem item) {
+    switch (item) {
+        case RootItem::PlayMedia: return "PLAY MEDIA";
+        case RootItem::Tv: return "TV";
+        case RootItem::Tagesschau: return "TAGESSCHAU";
+        case RootItem::News: return "NEWS";
+        case RootItem::Games: return "GAMES";
+        case RootItem::Ard: return "ARD";
+        case RootItem::Zdf: return "ZDF";
+        case RootItem::Settings: return "SETTINGS";
+        case RootItem::Quit: return "QUIT";
+    }
+    return "";
+}
+
+// Live TV: the channels of the TV menu (HLS streams played straight by mpv).
+struct TvChannel {
+    const char* name;
+    const char* url;
+    const char* fallbackUrl;  // tried once if the first does not load, else null
+};
+constexpr TvChannel kTvChannels[] = {
+    // mcdn.daserste.de does not resolve everywhere; ARD's other CDN name serves the same stream.
+    {"ARD", "https://mcdn.daserste.de/daserste/de/master.m3u8",
+     "https://daserste-live.ard-mcdn.de/daserste/live/hls/de/master.m3u8"},
+    {"ZDF", "https://zdf-hls-15.akamaized.net/hls/live/2016498/de/veryhigh/master.m3u8", nullptr},
+    {"TAGESSCHAU24", "https://tagesschau.akamaized.net/hls/live/2020115/tagesschau/tagesschau_1/master.m3u8",
+     nullptr},
+    {"ONE", "https://mcdn-one.ard.de/ardone/hls/master.m3u8", nullptr},
+    {"ARD ALPHA", "https://mcdn.br.de/br/fs/ard_alpha/hls/de/master.m3u8", nullptr},
+};
+
+// NextSection cycles the teletext sections in menu order.
+constexpr RootItem kSectionCycle[] = {RootItem::Tagesschau, RootItem::News, RootItem::Ard, RootItem::Zdf};
+
 const std::vector<std::string> kVideoScaleModeNames = {"FIT", "FILL", "CROP"};
+
+// Game picture options (Game menu). INTEGER scales by a whole number so every
+// emulated pixel is the same size; PIXEL shows square pixels (the picture's
+// own width : height) instead of the core's aspect.
+const std::vector<std::string> kRetroScaleNames = {"FIT", "INTEGER", "STRETCH"};
+const std::vector<std::string> kRetroAspectNames = {"CORE", "4:3", "PIXEL"};
 // The same three modes as the Settings screen names them: how a 4:3 picture
 // sits on a 16:9 screen -- black bars at the sides, stretched to fill, or
 // scaled to the full width with the top and bottom cropped.
@@ -453,6 +500,13 @@ bool App::init(Platform& platform) {
     launchOnTopScreen_ = loadedSettings.launchOnTopScreen;
     hardwareDecoding_ = loadedSettings.hardwareDecoding;
     mpv_.setHardwareDecoding(hardwareDecoding_);
+    retroScaleIndex_ = std::clamp(loadedSettings.retroScaleIndex, 0, static_cast<int>(kRetroScaleNames.size()) - 1);
+    retroAspectIndex_ =
+        std::clamp(loadedSettings.retroAspectIndex, 0, static_cast<int>(kRetroAspectNames.size()) - 1);
+    retroSmooth_ = loadedSettings.retroSmooth;
+    retroLastDirectory_ = loadedSettings.retroLastDirectory;
+    retroStartDirectory_ = loadedSettings.retroStartDirectory;
+    retro_.setSmooth(retroSmooth_);
     if (platform.supportsWindowModes()) {
         const int monitorChoiceCount = static_cast<int>(monitorChoiceNames_.size());
         monitorIndex_ = std::clamp(loadedSettings.monitorIndex, 0, monitorChoiceCount - 1);
@@ -496,7 +550,23 @@ bool App::init(Platform& platform) {
     ImGui_ImplOpenGL3_Init(platform.glslVersion());
     imguiInitialized_ = true;
 
-    rootMenu_.setItems({{"PLAY MEDIA"}, {"NEWS"}, {"TAGESSCHAU"}, {"ARD"}, {"ZDF"}, {"SETTINGS"}, {"EXIT"}});
+    std::vector<Menu::Item> rootLabels;
+    for (const RootItem item : kRootItems) {
+        rootLabels.push_back({rootItemLabel(item)});
+    }
+    rootMenu_.setItems(std::move(rootLabels));
+    std::vector<Menu::Item> tvLabels;
+    for (const TvChannel& channel : kTvChannels) {
+        tvLabels.push_back({channel.name});
+    }
+    tvMenu_.setItems(std::move(tvLabels));
+    gamesMenu_.setItems({{"BROWSE ROMS"}, {"FAVORITES"}});
+    gameFavoritesPath_ = dataDir + "/game_favorites.cfg";
+    loadGameFavorites(gameFavoritesPath_);
+    retroCores_ = retro::scanCores(platform.coreDirs());
+    for (const retro::CoreInfo& core : retroCores_) {
+        std::fprintf(stdout, "Core: %s %s (%s)\n", core.name.c_str(), core.version.c_str(), core.path.c_str());
+    }
     initTeletextSection(newsSection_, dataDir, assetDir, cacheDir, "news", "PVM_NEWS_CONFIG");
     initTeletextSection(tagesschauSection_, dataDir, assetDir, cacheDir, "tagesschau", "PVM_TAGESSCHAU_CONFIG");
     initMvwSection(ardSection_, dataDir, assetDir, cacheDir, "ard", "PVM_ARD_CONFIG");
@@ -620,6 +690,11 @@ void App::saveCurrentSettings() const {
     settings.monitorIndex = monitorIndex_;
     settings.launchOnTopScreen = launchOnTopScreen_;
     settings.hardwareDecoding = hardwareDecoding_;
+    settings.retroScaleIndex = retroScaleIndex_;
+    settings.retroAspectIndex = retroAspectIndex_;
+    settings.retroSmooth = retroSmooth_;
+    settings.retroLastDirectory = retroLastDirectory_;
+    settings.retroStartDirectory = retroStartDirectory_;
     saveSettings(configPath_, settings);
 }
 
@@ -667,11 +742,33 @@ void App::frame(const std::vector<input::InputEvent>& events) {
     }
 
     if (screen_ == Screen::Playing && mpv_.consumeEndOfFile()) {
-        onPlaybackStopped();
+        const bool failed = mpv_.consumePlaybackError();
+        const TvChannel* channel = cameFromTv_ ? &kTvChannels[tvChannelIndex_] : nullptr;
+        bool retrying = false;
+        if (failed && channel && channel->fallbackUrl && !tvTriedFallback_) {
+            tvTriedFallback_ = true;
+            std::fprintf(stdout, "TV: %s did not load, trying its second address\n", channel->name);
+            retrying = loadMedia(channel->fallbackUrl);
+        }
+        if (!retrying) {
+            onPlaybackStopped();
+            if (failed) {
+                showToast(channel ? std::string("CANNOT PLAY ") + channel->name
+                                  : std::string("CANNOT PLAY THIS FILE"));
+            }
+        }
     }
     // Keep the display awake while actually playing (not while paused, or on
     // any other screen).
-    platform_->setKeepAwake(screen_ == Screen::Playing && !mpv_.isPaused());
+    platform_->setKeepAwake((screen_ == Screen::Playing && !mpv_.isPaused()) ||
+                            (screen_ == Screen::Game && !gameMenuVisible_ && !suspended_));
+
+    if (screen_ == Screen::Game) {
+        retro_.update(platform_->now(), gameMenuVisible_ || suspended_);
+        if (retro_.takeShutdownRequest()) {
+            closeGame();
+        }
+    }
 
     ImGui_ImplOpenGL3_NewFrame();
     platform_->imguiNewFrame();
@@ -746,13 +843,29 @@ void App::injectSimulatedKey(const std::string& token) {
 }
 
 int App::inputContext() const {
-    return static_cast<int>(screen_) | (osdMenuVisible_ ? 0x100 : 0) | (pageEntry_.active ? 0x200 : 0);
+    return static_cast<int>(screen_) | (osdMenuVisible_ ? 0x100 : 0) | (pageEntry_.active ? 0x200 : 0) |
+           (gameMenuVisible_ ? 0x400 : 0);
 }
 
 void App::dispatchEvents(const std::vector<input::InputEvent>& events) {
+    // A game owns the pad: a press that includes a RetroPad button is that
+    // button and nothing else (its other bindings -- confirm, back, toggle
+    // CRT -- are for the menus). The D-pad is Up/Down/Left/Right and stays.
+    std::vector<uint32_t> retroGroups;
+    for (const input::InputEvent& event : events) {
+        if (event.group != 0 && input::isRetroAction(event.action)) {
+            retroGroups.push_back(event.group);
+        }
+    }
     uint32_t group = 0;
     int groupContext = 0;
     for (const input::InputEvent& event : events) {
+        if (screen_ == Screen::Game && !gameMenuVisible_ && event.group != 0 && !input::isRetroAction(event.action) &&
+            event.action != input::Action::Up && event.action != input::Action::Down &&
+            event.action != input::Action::Left && event.action != input::Action::Right &&
+            std::find(retroGroups.begin(), retroGroups.end(), event.group) != retroGroups.end()) {
+            continue;
+        }
         if (event.group != 0 && event.group == group) {
             if (inputContext() != groupContext) {
                 continue;  // this press already did its thing on the screen it was made on
@@ -863,6 +976,10 @@ void App::renderFrame() {
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 
+    if (screen_ == Screen::Game) {
+        renderGameFrame(width, height);
+        return;
+    }
     if (screen_ != Screen::Playing) {
         return;
     }
@@ -949,9 +1066,15 @@ void App::renderHud() {
         case Screen::News:
             renderTeletext();
             break;
+        case Screen::Game:
+            renderGameHud();
+            break;
         case Screen::RootMenu:
+        case Screen::TvMenu:
         case Screen::FileBrowser:
         case Screen::PickStartDirectory:
+        case Screen::GamesMenu:
+        case Screen::GameFavorites:
             renderMenu();
             break;
     }
@@ -976,10 +1099,25 @@ void App::renderPlaybackHud() {
                                                                : basename(mpv_.filename()));
 
             char timeLine[64];
-            std::snprintf(timeLine, sizeof(timeLine), "%s / %s", formatTimestamp(mpv_.timePositionSeconds()).c_str(),
-                          formatTimestamp(mpv_.durationSeconds()).c_str());
+            if (cameFromTv_) {
+                std::snprintf(timeLine, sizeof(timeLine), "LIVE");  // a stream has no length to show
+            } else {
+                std::snprintf(timeLine, sizeof(timeLine), "%s / %s",
+                              formatTimestamp(mpv_.timePositionSeconds()).c_str(),
+                              formatTimestamp(mpv_.durationSeconds()).c_str());
+            }
             drawOutlinedText(timeLine);
-            drawOutlinedText(mpv_.isPaused() ? "PAUSED" : "PLAYING");
+            // Buffering pre-empts paused/playing: it's what mpv is actually
+            // doing, and otherwise a stream that is still connecting or has
+            // stalled just reads "PLAYING" over a black screen with nothing
+            // to explain it. mpv's render FBO exists (and its texture is
+            // valid) from the very first Playing frame regardless, so a
+            // real signal is needed: the video format isn't known yet
+            // (dwidth/dheight, set once the stream actually opens) or mpv
+            // has explicitly paused itself to fill its network buffer.
+            int bufferingW = 0, bufferingH = 0;
+            const bool buffering = !mpv_.videoDisplaySize(bufferingW, bufferingH) || mpv_.isBuffering();
+            drawOutlinedText(buffering ? "BUFFERING..." : mpv_.isPaused() ? "PAUSED" : "PLAYING");
             // Which decoder is in use: hardware ("mediacodec-copy") or "no"
             // for software -- worth seeing when playback stutters.
             if (!mpv_.hwdecCurrent().empty()) {
@@ -1343,7 +1481,25 @@ void App::renderMenu() {
         ImGui::Separator();
         ImGui::Spacing();
 
-        if (screen_ != Screen::RootMenu) {
+        if (screen_ == Screen::TvMenu) {
+            {
+                VertexScaleScope textScope(textScaleX_, textScaleY_);
+                drawOutlinedText("LIVE TV");
+            }
+            ImGui::Spacing();
+        } else if (screen_ == Screen::GamesMenu) {
+            {
+                VertexScaleScope textScope(textScaleX_, textScaleY_);
+                drawOutlinedText("GAMES");
+            }
+            ImGui::Spacing();
+        } else if (screen_ == Screen::GameFavorites) {
+            {
+                VertexScaleScope textScope(textScaleX_, textScaleY_);
+                drawOutlinedText("FAVORITES");
+            }
+            ImGui::Spacing();
+        } else if (screen_ != Screen::RootMenu) {
             const bool picking = screen_ == Screen::PickStartDirectory;
             {
                 VertexScaleScope textScope(textScaleX_, textScaleY_);
@@ -1356,10 +1512,20 @@ void App::renderMenu() {
         }
     }
 
-    if (screen_ == Screen::RootMenu) {
-        drawScrollableRows(static_cast<int>(rootMenu_.items().size()), rootMenu_.selectedIndex(),
-                            [&](int i) { return rootMenu_.items()[i].label; }, anchor,
-                            computeListHeightBudget());
+    if (screen_ == Screen::RootMenu || screen_ == Screen::TvMenu || screen_ == Screen::GamesMenu) {
+        const Menu& menu = screen_ == Screen::RootMenu ? rootMenu_ : screen_ == Screen::TvMenu ? tvMenu_ : gamesMenu_;
+        drawScrollableRows(static_cast<int>(menu.items().size()), menu.selectedIndex(),
+                            [&](int i) { return menu.items()[i].label; }, anchor, computeListHeightBudget());
+    } else if (screen_ == Screen::GameFavorites) {
+        if (gameFavoritesMenu_.items().empty()) {
+            VertexScaleScope menuScope(menuScaleX_, menuScaleY_, anchor);
+            VertexScaleScope textScope(textScaleX_, textScaleY_);
+            drawOutlinedTextDisabled("(no favorites yet -- press F on a ROM in Browse ROMs)");
+        } else {
+            const Menu& menu = gameFavoritesMenu_;
+            drawScrollableRows(static_cast<int>(menu.items().size()), menu.selectedIndex(),
+                                [&](int i) { return menu.items()[i].label; }, anchor, computeListHeightBudget());
+        }
     } else if (fileBrowser_.empty()) {
         VertexScaleScope menuScope(menuScaleX_, menuScaleY_, anchor);
         VertexScaleScope textScope(textScaleX_, textScaleY_);
@@ -1368,8 +1534,14 @@ void App::renderMenu() {
         const auto& entries = fileBrowser_.entries();
         drawScrollableRows(
             static_cast<int>(entries.size()), fileBrowser_.selectedIndex(),
-            [&](int i) { return entries[i].isDirectory ? entries[i].name + "/" : entries[i].name; }, anchor,
-            computeListHeightBudget());
+            [&](int i) {
+                // A star marks a favorited ROM so it's recognizable while browsing,
+                // not just from the Favorites list itself.
+                const std::string star =
+                    browsingGames_ && !entries[i].isDirectory && isGameFavorite(entries[i].fullPath) ? "* " : "";
+                return star + (entries[i].isDirectory ? entries[i].name + "/" : entries[i].name);
+            },
+            anchor, computeListHeightBudget());
     }
 
     {
@@ -1378,14 +1550,21 @@ void App::renderMenu() {
         ImGui::Separator();
         {
             VertexScaleScope textScope(textScaleX_, textScaleY_);
-            drawOutlinedTextDisabled(screen_ == Screen::RootMenu ? "UP/DOWN: Move   ENTER: Select   ESC: Exit"
-                                                                  : "UP/DOWN: Move   ENTER: Open   ESC: Back");
+            const std::string footer =
+                screen_ == Screen::RootMenu   ? "UP/DOWN: Move   ENTER: Select   ESC: Exit"
+                : screen_ == Screen::TvMenu   ? "UP/DOWN: Move   ENTER: Watch   ESC: Back"
+                : screen_ == Screen::GamesMenu ? "UP/DOWN: Move   ENTER: Select   ESC: Back"
+                : screen_ == Screen::GameFavorites ? "ENTER: Play   F: Remove Favorite   ESC: Back"
+                : browsingGames_ ? "ENTER: Open   F: Toggle Favorite   ESC: Back"
+                                  : "UP/DOWN: Move   ENTER: Open   ESC: Back";
+            drawOutlinedTextDisabled(footer);
         }
     }
 
     ImGui::PopClipRect();
     ImGui::End();
 
+    renderToast();
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
@@ -1632,9 +1811,25 @@ std::vector<App::SettingsRowDesc> App::buildSettingsRows() {
         const std::string startAt =
             !startDirectory_.empty() ? startDirectory_ : (!mediaRoots_.empty() ? mediaRoots_[0] : ".");
         fileBrowser_.openPicker(startAt, showHiddenFiles_);
+        pickingGameDirectory_ = false;
         screen_ = Screen::PickStartDirectory;
     };
     rows.push_back(startDirRow);
+
+    SettingsRowDesc gameDirRow;
+    gameDirRow.type = SettingsRowType::Action;
+    gameDirRow.label = "ROM Start Directory";
+    const std::string gameStart = !retroStartDirectory_.empty() ? retroStartDirectory_
+                                  : !startDirectory_.empty()    ? startDirectory_
+                                  : !mediaRoots_.empty()        ? mediaRoots_[0]
+                                                                : std::string(".");
+    gameDirRow.actionValue = truncatePathForDisplay(gameStart);
+    gameDirRow.onActivate = [this, gameStart]() {
+        fileBrowser_.openPicker(gameStart, showHiddenFiles_);
+        pickingGameDirectory_ = true;
+        screen_ = Screen::PickStartDirectory;
+    };
+    rows.push_back(gameDirRow);
 
     rows.push_back(floatRow("Brightness", &brightness_, -0.5f, 0.5f, 0.05f));
     rows.push_back(floatRow("Contrast", &contrast_, 0.0f, 2.0f, 0.05f));
@@ -1838,8 +2033,11 @@ void App::adjustSettingsRow(SettingsRowDesc& row, int direction) {
 }
 
 void App::activateRootMenuItem(int index) {
-    switch (index) {
-        case 0:  // Play Media
+    if (index < 0 || index >= static_cast<int>(std::size(kRootItems))) {
+        return;
+    }
+    switch (kRootItems[index]) {
+        case RootItem::PlayMedia:
             // Without storage access every folder would just look empty:
             // ask (a system screen) instead, and come back to this menu.
             if (!platform_->storageAccessGranted()) {
@@ -1848,25 +2046,130 @@ void App::activateRootMenuItem(int index) {
             }
             enterFileBrowser(mergedExtensions());
             break;
-        case 1:  // News
-        case 2:  // Tagesschau
-        case 3:  // ARD
-        case 4:  // ZDF
-            openTeletext(index);
+        case RootItem::Tv:
+            screen_ = Screen::TvMenu;
             break;
-        case 5:  // Settings
+        case RootItem::Tagesschau:
+        case RootItem::News:
+        case RootItem::Ard:
+        case RootItem::Zdf:
+            openTeletext(kRootItems[index]);
+            break;
+        case RootItem::Games:
+            if (retroCores_.empty()) {
+                showToast("NO CORES FOUND IN " + platform_->coreDirs().front());
+                break;
+            }
+            if (!platform_->storageAccessGranted()) {
+                platform_->requestStorageAccess();
+                break;
+            }
+            screen_ = Screen::GamesMenu;
+            break;
+        case RootItem::Settings:
             settingsSelectedRow_ = 0;
             screen_ = Screen::Settings;
             break;
-        case 6:  // Exit
+        case RootItem::Quit:
             platform_->requestQuit();
+            break;
+    }
+}
+
+void App::playTvChannel(int index) {
+    if (index < 0 || index >= static_cast<int>(std::size(kTvChannels))) {
+        return;
+    }
+    const TvChannel& channel = kTvChannels[index];
+    if (loadMedia(channel.url)) {
+        currentMediaKind_ = MediaKind::Video;
+        playbackTitleOverride_ = channel.name;
+        cameFromTv_ = true;
+        tvChannelIndex_ = index;
+        tvTriedFallback_ = false;
+        screen_ = Screen::Playing;
+    } else {
+        showToast(std::string("CANNOT PLAY ") + channel.name);
+    }
+}
+
+void App::activateGamesMenuItem(int index) {
+    switch (index) {
+        case 0:  // Browse ROMs
+            enterFileBrowser(retro::allExtensions(retroCores_), true);
+            break;
+        case 1:  // Favorites
+            refreshGameFavoritesMenu();
+            screen_ = Screen::GameFavorites;
             break;
         default:
             break;
     }
 }
 
-void App::enterFileBrowser(std::vector<std::string> extensions) {
+bool App::isGameFavorite(const std::string& path) const {
+    return std::find(gameFavorites_.begin(), gameFavorites_.end(), path) != gameFavorites_.end();
+}
+
+void App::toggleGameFavorite(const std::string& path) {
+    if (path.empty()) {
+        return;
+    }
+    const auto found = std::find(gameFavorites_.begin(), gameFavorites_.end(), path);
+    const bool nowFavorite = found == gameFavorites_.end();
+    if (nowFavorite) {
+        gameFavorites_.push_back(path);
+    } else {
+        gameFavorites_.erase(found);
+    }
+    saveGameFavorites();
+    if (screen_ == Screen::GameFavorites) {
+        refreshGameFavoritesMenu();
+    }
+    showToast((nowFavorite ? "ADDED TO FAVORITES: " : "REMOVED FROM FAVORITES: ") + basename(path));
+}
+
+void App::refreshGameFavoritesMenu() {
+    std::vector<Menu::Item> items;
+    for (const std::string& path : gameFavorites_) {
+        items.push_back({basename(path)});
+    }
+    gameFavoritesMenu_.setItems(std::move(items));
+}
+
+// One absolute ROM path per line; blank lines and '#' comments ignored -- the
+// same plain-text convention as keys.cfg overrides, editable by hand.
+void App::loadGameFavorites(const std::string& path) {
+    gameFavorites_.clear();
+    std::ifstream file(path);
+    std::string line;
+    while (std::getline(file, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
+            line.pop_back();
+        }
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+        gameFavorites_.push_back(line);
+    }
+}
+
+void App::saveGameFavorites() const {
+    std::ofstream file(gameFavoritesPath_, std::ios::trunc);
+    if (!file) {
+        std::fprintf(stderr, "Could not write %s\n", gameFavoritesPath_.c_str());
+        return;
+    }
+    file << "# PVM Player -- favorite ROMs (Games > Favorites; add/remove with the\n";
+    file << "# ToggleFavorite hotkey, F by default -- see keys.cfg). One absolute path\n";
+    file << "# per line; edit or delete lines here to manage favorites by hand.\n";
+    for (const std::string& favoritePath : gameFavorites_) {
+        file << favoritePath << "\n";
+    }
+}
+
+void App::enterFileBrowser(std::vector<std::string> extensions, bool games) {
+    browsingGames_ = games;
     // The configurable start/last-used directory applies to the platform's
     // own roots (however many) and to the single-root case; an explicit
     // multi-root launch (argv) is a deliberate dev/CLI configuration and
@@ -1874,11 +2177,13 @@ void App::enterFileBrowser(std::vector<std::string> extensions) {
     // playback last stopped) takes priority over startDirectory_ (the
     // configured default) so "Play Media" resumes where the user left off.
     std::vector<std::string> roots = mediaRoots_;
+    const std::string& lastDirectory = games ? retroLastDirectory_ : lastUsedDirectory_;
     if (!mediaRootsExplicit_ || mediaRoots_.size() <= 1) {
-        if (!lastUsedDirectory_.empty()) {
-            roots = {lastUsedDirectory_};
-        } else if (!startDirectory_.empty()) {
-            roots = {startDirectory_};
+        const std::string& start = games && !retroStartDirectory_.empty() ? retroStartDirectory_ : startDirectory_;
+        if (!lastDirectory.empty()) {
+            roots = {lastDirectory};
+        } else if (!start.empty()) {
+            roots = {start};
         }
     }
     fileBrowser_.open(roots, std::move(extensions), showHiddenFiles_);
@@ -1888,6 +2193,10 @@ void App::enterFileBrowser(std::vector<std::string> extensions) {
 void App::handleInput(const input::InputEvent& event) {
     using input::Action;
 
+    if (screen_ == Screen::Game && event.phase == input::Phase::Release) {
+        handleGameInput(event);  // a game needs to know when buttons come up
+        return;
+    }
     if (event.phase == input::Phase::Release) {
         // An analog input that has let go starts its next deflection fresh.
         volumeAccum_ = 0.0f;
@@ -1937,7 +2246,104 @@ void App::handleInput(const input::InputEvent& event) {
                     break;
                 case Action::NextSection:
                     if (pressed) {
-                        openTeletext(nextSectionIndex());
+                        openTeletext(nextSection());
+                    }
+                    break;
+                default:
+                    break;
+            }
+            break;
+
+        case Screen::TvMenu:
+            switch (action) {
+                case Action::Up:
+                    tvMenu_.moveUp();
+                    break;
+                case Action::Down:
+                    tvMenu_.moveDown();
+                    break;
+                case Action::Confirm:
+                    if (pressed) {
+                        playTvChannel(tvMenu_.selectedIndex());
+                    }
+                    break;
+                case Action::OpenSettings:
+                    if (pressed) {
+                        settingsSelectedRow_ = 0;
+                        screen_ = Screen::Settings;
+                    }
+                    break;
+                case Action::Back:
+                case Action::BackSoft:
+                    if (pressed) {
+                        screen_ = Screen::RootMenu;
+                    }
+                    break;
+                default:
+                    break;
+            }
+            break;
+
+        case Screen::GamesMenu:
+            switch (action) {
+                case Action::Up:
+                    gamesMenu_.moveUp();
+                    break;
+                case Action::Down:
+                    gamesMenu_.moveDown();
+                    break;
+                case Action::Confirm:
+                    if (pressed) {
+                        activateGamesMenuItem(gamesMenu_.selectedIndex());
+                    }
+                    break;
+                case Action::OpenSettings:
+                    if (pressed) {
+                        settingsSelectedRow_ = 0;
+                        screen_ = Screen::Settings;
+                    }
+                    break;
+                case Action::Back:
+                case Action::BackSoft:
+                    if (pressed) {
+                        screen_ = Screen::RootMenu;
+                    }
+                    break;
+                default:
+                    break;
+            }
+            break;
+
+        case Screen::GameFavorites:
+            switch (action) {
+                case Action::Up:
+                    gameFavoritesMenu_.moveUp();
+                    break;
+                case Action::Down:
+                    gameFavoritesMenu_.moveDown();
+                    break;
+                case Action::Confirm:
+                    if (pressed && !gameFavorites_.empty()) {
+                        startGame(gameFavorites_[static_cast<size_t>(gameFavoritesMenu_.selectedIndex())]);
+                    }
+                    break;
+                case Action::ToggleFavorite:
+                    if (pressed && !gameFavorites_.empty()) {
+                        // Already a favorite by definition here, so this removes it;
+                        // toggleGameFavorite() re-clamps the selection via setItems().
+                        toggleGameFavorite(gameFavorites_[static_cast<size_t>(gameFavoritesMenu_.selectedIndex())]);
+                    }
+                    break;
+                case Action::OpenSettings:
+                    if (pressed) {
+                        settingsSelectedRow_ = 0;
+                        screen_ = Screen::Settings;
+                    }
+                    break;
+                case Action::Back:
+                case Action::BackSoft:
+                    if (pressed) {
+                        screen_ = Screen::GamesMenu;
                     }
                     break;
                 default:
@@ -1965,13 +2371,25 @@ void App::handleInput(const input::InputEvent& event) {
                         screen_ = Screen::Settings;
                     }
                     break;
+                case Action::ToggleFavorite:
+                    if (pressed && browsingGames_ && !fileBrowser_.empty() && !fileBrowser_.selectedIsDirectory()) {
+                        const std::string path = fileBrowser_.selectedFilePath();
+                        if (!path.empty()) {
+                            toggleGameFavorite(path);
+                        }
+                    }
+                    break;
                 case Action::Confirm:
                     if (pressed && !fileBrowser_.empty()) {
                         if (fileBrowser_.selectedIsDirectory()) {
                             fileBrowser_.enterSelectedDirectory();
                         } else {
                             const std::string path = fileBrowser_.selectedFilePath();
-                            if (!path.empty() && loadMedia(path)) {
+                            if (browsingGames_) {
+                                if (!path.empty()) {
+                                    startGame(path);
+                                }
+                            } else if (!path.empty() && loadMedia(path)) {
                                 currentMediaKind_ = extensionIn(path, kVideoExtensions)   ? MediaKind::Video
                                                      : extensionIn(path, kAudioExtensions) ? MediaKind::Audio
                                                                                             : MediaKind::Unknown;
@@ -1984,7 +2402,7 @@ void App::handleInput(const input::InputEvent& event) {
                 case Action::Back:
                 case Action::BackSoft:
                     if (pressed && !fileBrowser_.goBack()) {
-                        screen_ = Screen::RootMenu;
+                        screen_ = browsingGames_ ? Screen::GamesMenu : Screen::RootMenu;
                     }
                     break;
                 default:
@@ -2053,8 +2471,13 @@ void App::handleInput(const input::InputEvent& event) {
                 case Action::Confirm:
                     if (pressed && !fileBrowser_.empty()) {
                         if (fileBrowser_.selectedIsPickHere()) {
-                            startDirectory_ = fileBrowser_.currentPathLabel();
-                            lastUsedDirectory_.clear();  // an explicit new start dir takes priority
+                            if (pickingGameDirectory_) {
+                                retroStartDirectory_ = fileBrowser_.currentPathLabel();
+                                retroLastDirectory_.clear();
+                            } else {
+                                startDirectory_ = fileBrowser_.currentPathLabel();
+                                lastUsedDirectory_.clear();  // an explicit new start dir takes priority
+                            }
                             saveCurrentSettings();
                             screen_ = Screen::Settings;
                         } else if (fileBrowser_.selectedIsDirectory()) {
@@ -2075,6 +2498,10 @@ void App::handleInput(const input::InputEvent& event) {
 
         case Screen::News:
             handleTeletextInput(event);
+            break;
+
+        case Screen::Game:
+            handleGameInput(event);
             break;
 
         case Screen::Playing:
@@ -2250,7 +2677,7 @@ void App::handleTeletextInput(const input::InputEvent& event) {
             }
             break;
         case Action::NextSection:
-            if (pressed) openTeletext(nextSectionIndex());
+            if (pressed) openTeletext(nextSection());
             break;
         case Action::PageEntry:
             if (pressed) openPageEntry();
@@ -2369,32 +2796,34 @@ void App::initMvwSection(TeletextSection& section, const std::string& dataDir, c
     section.service = std::move(service);
 }
 
-void App::openTeletext(int rootMenuIndex) {
-    switch (rootMenuIndex) {
-        case 1:
-            activeTeletext_ = &newsSection_;
-            break;
-        case 2:
+void App::openTeletext(RootItem section) {
+    switch (section) {
+        case RootItem::Tagesschau:
             activeTeletext_ = &tagesschauSection_;
             break;
-        case 3:
+        case RootItem::Ard:
             activeTeletext_ = &ardSection_;
             break;
-        case 4:
+        case RootItem::Zdf:
             activeTeletext_ = &zdfSection_;
             break;
         default:
             activeTeletext_ = &newsSection_;
-            rootMenuIndex = 1;
+            section = RootItem::News;
             break;
     }
-    lastSectionMenuIndex_ = rootMenuIndex;
+    sectionOpened_ = true;
+    lastSection_ = section;
     pageEntry_.active = false;
     activeTeletext_->nav.goTo(teletext::kIndexPage);
     screen_ = Screen::News;
 }
 
 void App::setSuspended(bool suspended) {
+    suspended_ = suspended;
+    if (suspended && retro_.active()) {
+        retro_.flushSaveRam();  // the process may be killed while in the background
+    }
     if (suspended) {
         // Audio in the background is out of scope: pause what is playing, and
         // remember that it was us, so a resume doesn't start something the
@@ -2409,8 +2838,15 @@ void App::setSuspended(bool suspended) {
     }
 }
 
-App::PlaybackSnapshot App::snapshotPlayback() const {
+App::PlaybackSnapshot App::snapshotPlayback() {
     PlaybackSnapshot snapshot;
+    if (screen_ == Screen::Game && retro_.active()) {
+        snapshot.valid = true;
+        snapshot.game = true;
+        snapshot.path = retro_.romPath();
+        retro_.saveState(retro::Session::kRecoverySlot);
+        return snapshot;
+    }
     if (screen_ == Screen::Playing && !mpv_.filename().empty()) {
         snapshot.valid = true;
         snapshot.path = mpv_.filename();
@@ -2418,26 +2854,44 @@ App::PlaybackSnapshot App::snapshotPlayback() const {
         snapshot.paused = mpv_.isPaused() && !pausedBySuspend_;
         snapshot.title = playbackTitleOverride_;
         snapshot.fromTeletext = cameFromTeletext_;
+        snapshot.fromTv = cameFromTv_;
         snapshot.mediaKind = static_cast<int>(currentMediaKind_);
     }
     return snapshot;
 }
 
 void App::restorePlayback(const PlaybackSnapshot& snapshot) {
-    if (!snapshot.valid || !loadMedia(snapshot.path, snapshot.positionSeconds)) {
+    if (snapshot.valid && snapshot.game) {
+        startGame(snapshot.path);
+        if (retro_.active()) {
+            retro_.loadState(retro::Session::kRecoverySlot);
+        }
+        return;
+    }
+    if (!snapshot.valid || !loadMedia(snapshot.path, snapshot.fromTv ? 0.0 : snapshot.positionSeconds)) {
         return;
     }
     currentMediaKind_ = static_cast<MediaKind>(snapshot.mediaKind);
     playbackTitleOverride_ = snapshot.title;
     cameFromTeletext_ = snapshot.fromTeletext;
+    cameFromTv_ = snapshot.fromTv;
     screen_ = Screen::Playing;
     if (snapshot.paused) {
         mpv_.setPaused(true);
     }
 }
 
-int App::nextSectionIndex() const {
-    return lastSectionMenuIndex_ % 4 + 1;  // 0 (none yet) -> NEWS; ZDF wraps to NEWS
+RootItem App::nextSection() const {
+    constexpr size_t count = std::size(kSectionCycle);
+    if (!sectionOpened_) {
+        return kSectionCycle[0];
+    }
+    for (size_t i = 0; i < count; ++i) {
+        if (kSectionCycle[i] == lastSection_) {
+            return kSectionCycle[(i + 1) % count];
+        }
+    }
+    return kSectionCycle[0];
 }
 
 void App::adjustVolume(float points) {
@@ -2597,6 +3051,309 @@ void App::renderTeletext() {
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
+// --- Games (libretro cores) --------------------------------------------------
+
+void App::startGame(const std::string& romPath) {
+    const retro::CoreInfo* core = retro::pickCore(retroCores_, romPath);
+    if (!core) {
+        showToast("NO CORE FOR THIS FILE");
+        return;
+    }
+    // Remember the folder now: the browser is left for the game screen.
+    const std::string dir = fileBrowser_.currentPathLabel();
+    std::string error;
+    if (!retro_.open(*core, romPath, platform_->dataDir(), error)) {
+        std::fprintf(stderr, "[retro] %s: %s\n", core->name.c_str(), error.c_str());
+        showToast("CANNOT START GAME: " + error);
+        return;
+    }
+    if (!dir.empty() && dir != "Select Folder") {
+        retroLastDirectory_ = dir;
+        saveCurrentSettings();
+    }
+    std::fprintf(stdout, "Game: %s (%s%s)\n", retro_.gameName().c_str(), core->name.c_str(),
+                 retro_.hasAudio() ? "" : ", no audio");
+    retro_.setSmooth(retroSmooth_);
+    gameMenuVisible_ = false;
+    gameMenuRow_ = 0;
+    retroStartDown_ = retroSelectDown_ = false;
+    screen_ = Screen::Game;
+}
+
+void App::closeGame() {
+    if (!retro_.active()) {
+        return;
+    }
+    retro_.close();
+    gameMenuVisible_ = false;
+    if (screen_ == Screen::Game) {
+        screen_ = Screen::RootMenu;
+    }
+}
+
+void App::openGameMenu() {
+    gameMenuVisible_ = true;
+    gameMenuRow_ = 0;
+    retro_.releaseButtons();
+    retro_.flushSaveRam();
+}
+
+std::vector<App::SettingsRowDesc> App::buildGameMenuRows() {
+    auto actionRow = [](std::string label, std::function<void()> onActivate) {
+        SettingsRowDesc r;
+        r.type = SettingsRowType::Action;
+        r.label = std::move(label);
+        r.onActivate = std::move(onActivate);
+        return r;
+    };
+    std::vector<SettingsRowDesc> rows;
+    rows.push_back(actionRow("RESUME", [this]() { gameMenuVisible_ = false; }));
+    rows.push_back(actionRow("SAVE STATE", [this]() {
+        showToast(retro_.saveState(gameSlot_) ? "STATE SAVED TO SLOT " + std::to_string(gameSlot_)
+                                              : "CANNOT SAVE STATE");
+    }));
+    rows.push_back(actionRow("LOAD STATE", [this]() {
+        if (retro_.loadState(gameSlot_)) {
+            gameMenuVisible_ = false;
+        } else {
+            showToast("NO STATE IN SLOT " + std::to_string(gameSlot_));
+        }
+    }));
+    SettingsRowDesc slot;
+    slot.type = SettingsRowType::Int;
+    slot.label = "STATE SLOT";
+    slot.intPtr = &gameSlot_;
+    slot.intMin = 0;
+    slot.intMax = 9;
+    rows.push_back(slot);
+    rows.push_back(actionRow("RESET", [this]() {
+        retro_.reset();
+        gameMenuVisible_ = false;
+    }));
+
+    gameMenuFavoriteFlag_ = isGameFavorite(retro_.romPath());
+    SettingsRowDesc favorite;
+    favorite.type = SettingsRowType::Bool;
+    favorite.label = "FAVORITE";
+    favorite.boolPtr = &gameMenuFavoriteFlag_;
+    favorite.onLabel = "YES";
+    favorite.offLabel = "NO";
+    favorite.onBoolChanged = [this]() { toggleGameFavorite(retro_.romPath()); };
+    rows.push_back(favorite);
+
+    SettingsRowDesc scale;
+    scale.type = SettingsRowType::Enum;
+    scale.label = "SCALE";
+    scale.enumPtr = &retroScaleIndex_;
+    scale.enumNames = &kRetroScaleNames;
+    rows.push_back(scale);
+    SettingsRowDesc aspect;
+    aspect.type = SettingsRowType::Enum;
+    aspect.label = "ASPECT";
+    aspect.enumPtr = &retroAspectIndex_;
+    aspect.enumNames = &kRetroAspectNames;
+    rows.push_back(aspect);
+    SettingsRowDesc filter;
+    filter.type = SettingsRowType::Bool;
+    filter.label = "FILTER";
+    filter.boolPtr = &retroSmooth_;
+    filter.onLabel = "SMOOTH";
+    filter.offLabel = "SHARP";
+    filter.onBoolChanged = [this]() { retro_.setSmooth(retroSmooth_); };
+    rows.push_back(filter);
+
+    rows.push_back(actionRow("CLOSE GAME", [this]() { closeGame(); }));
+    return rows;
+}
+
+void App::handleGameInput(const input::InputEvent& event) {
+    using input::Action;
+    const Action action = event.action;
+    const bool down = event.phase != input::Phase::Release;
+    const bool pressed = event.phase == input::Phase::Press;
+
+    // Start and Select are tracked whatever is on screen, so a release that
+    // arrives while the menu is open is not lost (see the chord below).
+    if (action == Action::RetroStart) {
+        retroStartDown_ = down;
+    } else if (action == Action::RetroSelect) {
+        retroSelectDown_ = down;
+    }
+
+    if (gameMenuVisible_) {
+        if (!down) {
+            return;
+        }
+        std::vector<SettingsRowDesc> rows = buildGameMenuRows();
+        const int rowCount = static_cast<int>(rows.size());
+        switch (action) {
+            case Action::Up:
+                gameMenuRow_ = std::max(0, gameMenuRow_ - 1);
+                break;
+            case Action::Down:
+                gameMenuRow_ = std::min(rowCount - 1, gameMenuRow_ + 1);
+                break;
+            case Action::Left:
+            case Action::Right:
+                adjustSettingsRow(rows[static_cast<size_t>(gameMenuRow_)], action == Action::Left ? -1 : 1);
+                saveCurrentSettings();
+                break;
+            case Action::Confirm:
+                if (pressed && rows[static_cast<size_t>(gameMenuRow_)].onActivate) {
+                    rows[static_cast<size_t>(gameMenuRow_)].onActivate();
+                }
+                break;
+            case Action::Back:
+            case Action::ToggleOsd:
+                if (pressed) {
+                    gameMenuVisible_ = false;
+                }
+                break;
+            default:
+                break;
+        }
+        return;
+    }
+
+    if (action == Action::ToggleFavorite) {
+        if (pressed) {
+            toggleGameFavorite(retro_.romPath());
+        }
+        return;
+    }
+
+    static const std::pair<Action, retro::PadButton> kButtons[] = {
+        {Action::Up, retro::kPadUp},         {Action::Down, retro::kPadDown},   {Action::Left, retro::kPadLeft},
+        {Action::Right, retro::kPadRight},   {Action::RetroA, retro::kPadA},    {Action::RetroB, retro::kPadB},
+        {Action::RetroX, retro::kPadX},      {Action::RetroY, retro::kPadY},    {Action::RetroL, retro::kPadL},
+        {Action::RetroR, retro::kPadR},      {Action::RetroL2, retro::kPadL2},  {Action::RetroR2, retro::kPadR2},
+        {Action::RetroSelect, retro::kPadSelect}, {Action::RetroStart, retro::kPadStart},
+    };
+    for (const auto& [mapped, button] : kButtons) {
+        if (action == mapped) {
+            if (event.phase != input::Phase::Repeat) {
+                retro_.setButton(button, down);
+            }
+            // Start + Select together: the game menu (a pad has no spare button).
+            if (pressed && retroStartDown_ && retroSelectDown_) {
+                openGameMenu();
+            }
+            return;
+        }
+    }
+    // Escape / M / I on a keyboard.
+    if (pressed && (action == Action::Back || action == Action::ToggleOsd)) {
+        openGameMenu();
+    }
+}
+
+void App::renderGameFrame(int width, int height) {
+    if (retro_.texture() == 0 || width <= 0 || height <= 0) {
+        return;
+    }
+    const int texW = retro_.textureWidth();
+    const int texH = retro_.textureHeight();
+    float aspect = retro_.aspect();
+    if (retroAspectIndex_ == 1) {
+        aspect = 4.0f / 3.0f;
+    } else if (retroAspectIndex_ == 2) {
+        aspect = static_cast<float>(texW) / static_cast<float>(texH);
+    }
+
+    // The rectangle the picture occupies, in framebuffer pixels.
+    float destW = static_cast<float>(width);
+    float destH = static_cast<float>(height);
+    if (retroScaleIndex_ != 2) {
+        const float fitW = std::min(destW, destH * aspect);
+        const float fitH = fitW / aspect;
+        destW = fitW;
+        destH = fitH;
+        if (retroScaleIndex_ == 1) {
+            // Whole multiples of the emulated height, if at least 1x fits.
+            const float n = std::floor(std::min(static_cast<float>(height) / static_cast<float>(texH),
+                                                 static_cast<float>(width) / (static_cast<float>(texH) * aspect)));
+            if (n >= 1.0f) {
+                destH = n * static_cast<float>(texH);
+                destW = destH * aspect;
+            }
+        }
+    }
+    const int x = static_cast<int>((static_cast<float>(width) - destW) * 0.5f);
+    const int y = static_cast<int>((static_cast<float>(height) - destH) * 0.5f);
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(x, y, static_cast<int>(destW), static_cast<int>(destH));
+    glUseProgram(blitProgram_);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, retro_.texture());
+    glUniform1i(glGetUniformLocation(blitProgram_, "uTexture"), 0);
+    // Rows arrive top first; GL's first row is the bottom.
+    glUniform2f(glGetUniformLocation(blitProgram_, "uUvScale"), 1.0f, -1.0f);
+    glUniform2f(glGetUniformLocation(blitProgram_, "uUvOffset"), 0.0f, 1.0f);
+    glBindVertexArray(blitVao_);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glUseProgram(0);
+    glViewport(0, 0, width, height);
+}
+
+void App::renderGameHud() {
+    if (gameMenuVisible_) {
+        renderGameMenu();
+    }
+    renderToast();
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+}
+
+void App::renderGameMenu() {
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                                    ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove;
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowBgAlpha(0.8f);
+    ImGui::Begin("Game Menu", nullptr, flags);
+    {
+        VertexScaleScope textScope(textScaleX_, textScaleY_);
+        drawOutlinedText(retro_.gameName());
+        drawOutlinedTextDisabled(retro_.coreName());
+    }
+    ImGui::Separator();
+    const std::vector<SettingsRowDesc> rows = buildGameMenuRows();
+    for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
+        const std::string line = (i == gameMenuRow_ ? "> " : "  ") + formatOsdRow(rows[static_cast<size_t>(i)]);
+        VertexScaleScope textScope(textScaleX_, textScaleY_);
+        drawOutlinedText(line);
+    }
+    ImGui::End();
+}
+
+void App::showToast(const std::string& text) {
+    toastText_ = text;
+    toastHideAtTime_ = platform_->now() + 3.0;
+}
+
+void App::renderToast() {
+    if (toastText_.empty() || platform_->now() >= toastHideAtTime_) {
+        return;
+    }
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                                    ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoInputs;
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y - 24.0f), ImGuiCond_Always, ImVec2(0.5f, 1.0f));
+    ImGui::SetNextWindowBgAlpha(0.8f);
+    ImGui::Begin("Toast", nullptr, flags);
+    {
+        VertexScaleScope textScope(textScaleX_, textScaleY_);
+        drawOutlinedText(toastText_);
+    }
+    ImGui::End();
+}
+
 void App::onPlaybackStopped() {
     currentMediaKind_ = MediaKind::Unknown;
     osdMenuVisible_ = false;
@@ -2608,6 +3365,12 @@ void App::onPlaybackStopped() {
     if (cameFromTeletext_) {
         cameFromTeletext_ = false;
         screen_ = Screen::News;
+        return;
+    }
+
+    if (cameFromTv_) {
+        cameFromTv_ = false;
+        screen_ = Screen::TvMenu;
         return;
     }
 
@@ -2628,6 +3391,7 @@ void App::onPlaybackStopped() {
 
 void App::shutdown() {
     reportFrameStats();
+    closeGame();
     // Joins the refresh threads (aborting any transfer in flight).
     newsSection_.service.reset();
     tagesschauSection_.service.reset();

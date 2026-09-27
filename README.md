@@ -4,6 +4,7 @@ A fullscreen media player prototype styled after a Sony PVM broadcast
 monitor: a flat black, monospace, keyboard/remote-only on-screen menu, and
 an optional CRT post-process pass (scanlines, vignette, bloom, color tear)
 over whatever's playing.
+The platform abstraction branch for supporting Android was branched by Claude Code. Honestly, this allowed me to reuse almost all of the code. 
 
 <p align="center">
   <img src="docs/screenshot-menu-current.png" alt="PVM-style root menu" width="420">
@@ -25,6 +26,10 @@ over whatever's playing.
   by RSS/Atom sources you configure; ARD/ZDF each browse and play their own
   Mediathek's videos via the MediathekViewWeb API. All four refresh in the
   background and cache to disk (see [NEWS](#news-teletext) below)
+- **GAMES**: runs [libretro](https://www.libretro.com/) cores (emulators) --
+  Game Boy / Color with gambatte, SNES with bsnes, and any other
+  software-rendered core -- through the same CRT pass, with battery saves,
+  save states and a game menu (see [Games](#games-libretro-cores) below)
 - **CRT post-process pass**: scanlines, vignette, bloom, and a chromatic
   "color tear" effect, each independently tunable, plus always-on
   brightness/contrast/saturation controls — toggle the whole effect with
@@ -34,7 +39,7 @@ over whatever's playing.
   uncapped font size, 5 menu screen positions, 3 selection-highlight
   styles, and independent X/Y stretch for the menu panel and for text
 - Settings persist to a plain-text `config.cfg` next to the executable
-- **Stays awake during playback** (macOS): the display's idle-sleep timer is
+- **Stays awake during playback**: the display's idle-sleep timer is
   held off while a video is actively playing (not while paused, or on any
   other screen), so the screen doesn't blank mid-movie on battery power
 
@@ -65,6 +70,21 @@ defaults to the current directory. Multiple directories show a root
 picker; the "Start Directory" setting is a simpler single-folder default
 for everyday use.
 
+The root menu reads: Play Media, TV, Tagesschau, News, Games, ARD, ZDF,
+Settings, Quit.
+
+**TV** opens a list of live channels (ARD, ZDF, tagesschau24, ONE, ARD alpha),
+HLS streams played by mpv; the info overlay shows LIVE instead of a time, and
+stopping returns to the list. The stream addresses are in `kTvChannels` in
+`src/app.cpp`. ARD's first address (`mcdn.daserste.de`) does not resolve on
+every network, so a second one is tried automatically if it fails to load.
+A stream that never connects (a blocked or dead address) is given 15 seconds
+(mpv's `network-timeout`) before it's treated as failed and the app returns
+to the list with a toast, rather than sitting on a black screen forever; while
+actually connecting or rebuffering, the overlay reads BUFFERING instead of
+PLAYING. Reaching a stream still depends on your network actually being able
+to route to it -- if a channel never gets past BUFFERING, check that first.
+
 | Key(s)              | Action                                    |
 |----------------------|--------------------------------------------|
 | ↑ / ↓                | Move selection                             |
@@ -78,6 +98,88 @@ Keys are remappable: copy `conf/keys.example.cfg` to `keys.cfg` next to
 the executable and change the lines you need. Input goes through a
 platform-free action layer (`src/input/`), so the same bindings file
 format serves keyboards, remotes and, later, gamepads.
+
+## Games (libretro cores)
+
+The **GAMES** entry of the root menu runs game ROMs with libretro cores that
+are loaded at run time. No emulator is built into or shipped with the player;
+fetch the ones you want:
+
+```sh
+scripts/fetch_cores.sh                 # gambatte + bsnes for this machine
+scripts/fetch_cores.sh mgba            # or any other core from the libretro buildbot
+```
+
+(`scripts\fetch_cores.ps1` on Windows.) In a development build the cores go
+in `cores/` of the source tree; a copy of the player finds them in a `cores`
+folder next to the executable, or in `$PVM_CORES_DIR`. The cores are the
+buildbot's "latest" builds, each with its own licence (gambatte and bsnes are
+GPL) -- you download them for your own use.
+
+**GAMES** opens a small menu: **Browse ROMs** or **Favorites**. Browse ROMs is
+yours to bring: it browses folders like *Play Media* (starting where you last
+left off, or at Settings > *ROM Start Directory*), listing the file types your
+cores handle, and starts the core that lists the ROM's extension (the more
+specialised core if several do, e.g. gambatte for `.gb`). **Favorites** lists
+ROMs you've marked, for launching without digging back through folders.
+
+Add or remove the selected ROM in Browse ROMs, or the current one while
+playing, with the **ToggleFavorite** hotkey (**F** by default, or the
+gamepad's left stick click); a favorited ROM shows a `*` in the browser.
+Inside Favorites the same hotkey removes the selected entry. The in-game menu
+(below) also has a FAVORITE row that does the same thing. Favorites persist to
+`game_favorites.cfg` next to `config.cfg` -- one absolute path per line,
+editable by hand.
+
+Only software-rendered cores work (most 2D systems); cores that need an
+OpenGL or Vulkan context are refused. Files live in `retro/` next to the
+executable: `saves/` (battery saves `<rom>.srm`, save states `<rom>.state[N]`),
+`system/` (BIOS files a core asks for) and `options/<core>.cfg` (`key = value`
+lines overriding a core's options). 
+
+| Keyboard           | RetroPad                          |
+|--------------------|------------------------------------|
+| Arrow keys         | D-pad                              |
+| X / Z              | A / B                              |
+| S / A              | X / Y                              |
+| Q / W, E / T       | L / R, L2 / R2                     |
+| Enter / Right Shift or Tab | Start / Select             |
+| Esc, M or I        | Game menu                          |
+
+On a gamepad, the face buttons map by position (bottom = RetroPad B, right =
+A, ...), the triggers are L2/R2, and **Start + Select together** open the game
+menu: resume, save/load state (slot 0-9), reset, favorite, scale (fit /
+integer / stretch), aspect (core / 4:3 / square pixels), filter and close
+game. Every binding can be changed in `keys.cfg` (`retro_a`, `retro_start`,
+`toggle_favorite`, ...).
+
+**Android.** The cores are packaged into the APK as native libraries -- Android
+only loads code from the app's own library folder, so cores cannot be dropped
+in afterwards. `scripts/build_apk.sh` (`build_apk.ps1` on Windows) builds a
+complete APK, cores included: it fetches whatever's missing (the vendored
+headers, libmpv, and gambatte + bsnes for arm64 via `fetch_cores.sh --android`)
+and runs Gradle, ending with `dist/pvm-player-release.apk`. Needs the Android
+SDK/NDK already set up (`scripts/setup.sh --android` does that once). Options:
+
+```sh
+scripts/build_apk.sh                  # release APK with gambatte + bsnes
+scripts/build_apk.sh --debug          # a debug build instead
+scripts/build_apk.sh mgba             # specific cores instead of the default two
+scripts/build_apk.sh --no-cores       # no game cores at all (smaller APK, no bundled GPL code)
+scripts/build_apk.sh --force          # redo every fetch step, not just what's missing
+```
+
+GAMES then browses your storage for ROMs like *Play Media* does. The bundled
+cores are GPL: an APK containing them is a GPL-covered combination if you pass
+it on, so keep it for your own devices or comply with the licences (`--no-cores`
+sidesteps this if you don't want any GPL code in the APK at all). A running
+game survives the GL context being lost (it is resumed from an automatic save
+state) and is paused, with its battery save written, while the app is in the
+background.
+
+Timing follows the display: when it refreshes at about the core's rate one
+emulated frame is shown per refresh and the audio speed is adjusted by a
+fraction of a percent to match; otherwise frames are paced against the clock.
 
 ## NEWS (teletext)
 

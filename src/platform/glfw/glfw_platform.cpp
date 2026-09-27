@@ -8,6 +8,7 @@
 #include <imgui_impl_glfw.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 
 #include "platform/glfw/keymap_glfw.h"
@@ -79,6 +80,7 @@ bool GlfwPlatform::init(int width, int height, const char* title) {
                  glGetString(GL_RENDERER));
 
     loadKeyMap();
+    pad_ = std::make_unique<input::PadTranslator>(keyMap_, input::defaultAnalogBindings());
 
 #ifdef __APPLE__
     // Lets the hardware Play/Pause media key act as PlayPause in addition to
@@ -128,6 +130,77 @@ void GlfwPlatform::pollEvents(std::vector<input::InputEvent>& out) {
     glfwPollEvents();
     out.insert(out.end(), pending_.begin(), pending_.end());
     pending_.clear();
+    pollGamepad(glfwGetTime());
+    const size_t first = out.size();
+    pad_->drain(out);
+    // Keep the translator's press groups apart from the keyboard's.
+    for (size_t i = first; i < out.size(); ++i) {
+        if (out[i].group != 0) {
+            out[i].group += 1u << 24;
+        }
+    }
+}
+
+void GlfwPlatform::pollGamepad(double now) {
+    int jid = -1;
+    for (int candidate = GLFW_JOYSTICK_1; candidate <= GLFW_JOYSTICK_LAST; ++candidate) {
+        if (glfwJoystickIsGamepad(candidate)) {
+            jid = candidate;
+            break;
+        }
+    }
+    GLFWgamepadstate state;
+    if (jid < 0 || !glfwGetGamepadState(jid, &state)) {
+        if (padWasPresent_) {
+            padWasPresent_ = false;  // unplugged: nothing stays pressed
+            padButtons_.fill(false);
+            triggerSeenRest_.fill(false);
+            pad_->releaseAll();
+        }
+        return;
+    }
+    padWasPresent_ = true;
+
+    for (int b = 0; b < static_cast<int>(padButtons_.size()); ++b) {
+        const bool down = state.buttons[b] == GLFW_PRESS;
+        if (down != padButtons_[static_cast<size_t>(b)]) {
+            padButtons_[static_cast<size_t>(b)] = down;
+            if (down) {
+                pad_->keyDown(input::glfw::padCode(b), now);
+            } else {
+                pad_->keyUp(input::glfw::padCode(b), now);
+            }
+        }
+    }
+    pad_->setAxis(input::PadAxis::LeftX, state.axes[GLFW_GAMEPAD_AXIS_LEFT_X], now);
+    pad_->setAxis(input::PadAxis::LeftY, state.axes[GLFW_GAMEPAD_AXIS_LEFT_Y], now);
+    pad_->setAxis(input::PadAxis::RightY, state.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y], now);
+    // Triggers rest at -1 and travel to +1; PadTranslator wants 0..1. A
+    // trigger that has not yet been seen at rest is ignored (some drivers
+    // report 0 until it is first touched, which would read as half-pulled).
+    const int triggerAxes[2] = {GLFW_GAMEPAD_AXIS_LEFT_TRIGGER, GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER};
+    const input::PadAxis padTriggers[2] = {input::PadAxis::LeftTrigger, input::PadAxis::RightTrigger};
+    for (int t = 0; t < 2; ++t) {
+        const float raw = state.axes[triggerAxes[t]];
+        if (raw < -0.9f) {
+            triggerSeenRest_[static_cast<size_t>(t)] = true;
+        }
+        const float value = triggerSeenRest_[static_cast<size_t>(t)] ? (raw + 1.0f) * 0.5f : 0.0f;
+        pad_->setAxis(padTriggers[t], value, now);
+    }
+    pad_->update(now);
+}
+
+std::vector<std::string> GlfwPlatform::coreDirs() const {
+    std::vector<std::string> dirs;
+    if (const char* env = std::getenv("PVM_CORES_DIR")) {
+        dirs.push_back(env);
+    }
+    dirs.push_back(exeDir_ + "/cores");
+#ifdef PVM_DEV_CORES_DIR
+    dirs.push_back(PVM_DEV_CORES_DIR);
+#endif
+    return dirs;
 }
 
 bool GlfwPlatform::translateKeyName(std::string_view name, std::vector<input::InputEvent>& out) const {

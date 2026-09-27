@@ -83,7 +83,7 @@ void testDefaultsMatchLegacyKeys() {
         CHECK(emits(map, GLFW_KEY_0 + d, digit));
         CHECK(emits(map, GLFW_KEY_KP_0 + d, digit));
     }
-    CHECK(map.actionsFor(GLFW_KEY_Q).empty());
+    CHECK(map.actionsFor(GLFW_KEY_J).empty());
 }
 
 // Each screen reacts to a subset of actions. A key emitting two actions from
@@ -92,7 +92,13 @@ void testDefaultsMatchLegacyKeys() {
 void testNoScreenSeesTwoActionsFromOneKey() {
     const std::vector<std::pair<const char*, std::set<Action>>> screens = {
         {"root", {Action::Up, Action::Down, Action::Confirm, Action::Back, Action::ToggleCrt}},
-        {"browser", {Action::Up, Action::Down, Action::Confirm, Action::Back, Action::BackSoft, Action::ToggleCrt}},
+        {"browser", {Action::Up, Action::Down, Action::Confirm, Action::Back, Action::BackSoft, Action::ToggleCrt,
+                     Action::ToggleFavorite}},
+        {"tv", {Action::Up, Action::Down, Action::Confirm, Action::Back, Action::BackSoft, Action::ToggleCrt}},
+        {"games-menu", {Action::Up, Action::Down, Action::Confirm, Action::Back, Action::BackSoft, Action::ToggleCrt}},
+        {"game-favorites",
+         {Action::Up, Action::Down, Action::Confirm, Action::ToggleFavorite, Action::Back, Action::BackSoft,
+          Action::ToggleCrt}},
         {"settings",
          {Action::Up, Action::Down, Action::Left, Action::Right, Action::Confirm, Action::Back, Action::BackSoft,
           Action::ToggleCrt}},

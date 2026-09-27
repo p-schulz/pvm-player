@@ -59,6 +59,14 @@ class MainActivity : GameActivity() {
     fun cachePath(): String = cacheDir.absolutePath
 
     /**
+     * Where the APK's native libraries are unpacked (see useLegacyPackaging in
+     * app/build.gradle.kts): the only place Android lets an app load code from,
+     * so it is where the libretro cores live. For Platform::coreDirs().
+     */
+    @Suppress("unused") // called from native code
+    fun nativeLibraryPath(): String = applicationInfo.nativeLibraryDir
+
+    /**
      * Whether the app may read shared storage by plain path (the "all files
      * access" permission). Media is opened by path, by the file browser and by
      * libmpv, so this is what makes them work. Fine for sideloading; the Play

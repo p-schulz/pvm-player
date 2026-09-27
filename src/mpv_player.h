@@ -91,6 +91,9 @@ public:
     // Phase 3 menu to return to the root menu when playback finishes on
     // its own, not just on an explicit "back" key press.
     bool consumeEndOfFile();
+    // True once after a file that ended because it could not be played (or
+    // broke off) -- read right after consumeEndOfFile() says playback ended.
+    bool consumePlaybackError();
 
     // The decoder mpv settled on for the current file: "mediacodec-copy" for
     // Android hardware decoding, "no" for software, "" before a video decoder
@@ -99,6 +102,11 @@ public:
     const std::string& hwdecCurrent() const { return hwdecCurrent_; }
 
     bool isPaused() const { return paused_; }
+    // True while mpv has paused itself to build up its network buffer (a
+    // stream just started, or the connection is struggling) -- not a user
+    // pause. See networkTimeoutSeconds's comment for what happens if this
+    // never clears.
+    bool isBuffering() const { return pausedForCache_; }
     double timePositionSeconds() const { return timePos_; }
     double durationSeconds() const { return duration_; }
     const std::string& filename() const { return filename_; }
@@ -126,6 +134,7 @@ private:
 
     bool paused_ = false;
     bool endOfFileFlag_ = false;
+    bool playbackErrorFlag_ = false;
     double timePos_ = 0.0;
     double duration_ = 0.0;
     std::string filename_;

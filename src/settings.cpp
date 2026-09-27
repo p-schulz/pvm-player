@@ -162,6 +162,16 @@ bool loadSettings(const std::string& path, AppSettings& settings) {
             ok = parseBool(value, settings.launchOnTopScreen);
         } else if (key == "hardware_decoding") {
             ok = parseBool(value, settings.hardwareDecoding);
+        } else if (key == "retro_scale") {
+            ok = parseInt(value, settings.retroScaleIndex);
+        } else if (key == "retro_aspect") {
+            ok = parseInt(value, settings.retroAspectIndex);
+        } else if (key == "retro_smooth") {
+            ok = parseBool(value, settings.retroSmooth);
+        } else if (key == "retro_last_directory") {
+            settings.retroLastDirectory = value;
+        } else if (key == "retro_start_directory") {
+            settings.retroStartDirectory = value;
         } else {
             // Unknown key: ignored rather than treated as an error, so an
             // older config file still loads after new settings are added.
@@ -225,6 +235,11 @@ bool saveSettings(const std::string& path, const AppSettings& settings) {
     file << "monitor_index=" << settings.monitorIndex << "\n";
     file << "launch_on_top_screen=" << (settings.launchOnTopScreen ? "true" : "false") << "\n";
     file << "hardware_decoding=" << (settings.hardwareDecoding ? "true" : "false") << "\n";
+    file << "retro_scale=" << settings.retroScaleIndex << "\n";
+    file << "retro_aspect=" << settings.retroAspectIndex << "\n";
+    file << "retro_smooth=" << (settings.retroSmooth ? "true" : "false") << "\n";
+    file << "retro_last_directory=" << settings.retroLastDirectory << "\n";
+    file << "retro_start_directory=" << settings.retroStartDirectory << "\n";
 
     return static_cast<bool>(file);
 }

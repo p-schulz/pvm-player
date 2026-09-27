@@ -20,3 +20,7 @@
 /CMakeUserPresets.json
 /.vscode/
 /thirdparty/libmpv/
+
+# libretro cores (scripts/fetch_cores.sh) and their saves
+/cores/
+/thirdparty/cores-android/

@@ -40,6 +40,7 @@ enum class Action : uint8_t {
     ToggleCrt,
     OpenSettings,  // menus: open the settings screen (gamepad Start)
     NextSection,   // teletext: cycle NEWS/TAGESSCHAU/ARD/ZDF; root menu: jump into the next one
+    ToggleFavorite,  // games: add/remove the selected/current ROM from Favorites
 
     // Teletext colour keys
     FastextRed,     // previous page
@@ -59,6 +60,20 @@ enum class Action : uint8_t {
     Digit7,
     Digit8,
     Digit9,
+
+    // Games (libretro cores): the RetroPad. Its D-pad is Up/Down/Left/Right.
+    // Unlike everything above these are held state, not one-shot commands:
+    // the game sees the button down from Press to Release.
+    RetroA,
+    RetroB,
+    RetroX,
+    RetroY,
+    RetroL,
+    RetroR,
+    RetroL2,
+    RetroR2,
+    RetroSelect,
+    RetroStart,
 
     Count
 };
@@ -98,5 +113,10 @@ std::optional<Action> actionFromName(std::string_view name);
 
 // 0..9 for Digit0..Digit9, else -1.
 int digitOf(Action action);
+
+// RetroA..RetroStart.
+inline bool isRetroAction(Action action) {
+    return action >= Action::RetroA && action <= Action::RetroStart;
+}
 
 }  // namespace input

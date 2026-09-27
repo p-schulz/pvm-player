@@ -329,8 +329,10 @@ step "Vendored sources (thirdparty/)"
 NEED_THIRDPARTY=0
 [ -f thirdparty/glad/src/gl.c ] || NEED_THIRDPARTY=1
 [ -f thirdparty/imgui/imgui.cpp ] && [ -f thirdparty/imgui/backends/imgui_impl_glfw.cpp ] || NEED_THIRDPARTY=1
+[ -f thirdparty/libretro/libretro.h ] || NEED_THIRDPARTY=1
+[ -f thirdparty/miniaudio/miniaudio.h ] || NEED_THIRDPARTY=1
 if [ "$NEED_THIRDPARTY" = 0 ]; then
-    ok "glad, Dear ImGui"
+    ok "glad, Dear ImGui, libretro.h, miniaudio"
     [ -f thirdparty/json/nlohmann/json.hpp ] && ok "nlohmann/json" || warn "nlohmann/json not vendored; CMake uses a system copy or fetches it"
 elif [ "$CHECK_ONLY" = 1 ]; then
     bad "thirdparty/ is incomplete (setup.sh without --check restores it)"

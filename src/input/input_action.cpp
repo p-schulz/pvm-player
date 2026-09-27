@@ -13,10 +13,12 @@ constexpr std::array<const char*, kActionCount> kNames = {
     "up",           "down",          "left",          "right",        "confirm",       "back",
     "back_soft",    "page_up",       "page_down",     "scroll_up",    "scroll_down",   "play_pause",
     "seek_back",    "seek_fwd",      "volume_down",   "volume_up",    "toggle_osd",    "media_info",
-    "video_scale",  "aspect_ratio",  "toggle_crt",    "open_settings", "next_section",  "fastext_red",
+    "video_scale",  "aspect_ratio",  "toggle_crt",    "open_settings", "next_section",  "toggle_favorite",
+    "fastext_red",
     "fastext_green", "fastext_yellow", "fastext_blue", "page_entry",  "digit_0",       "digit_1",
     "digit_2",      "digit_3",       "digit_4",       "digit_5",      "digit_6",       "digit_7",
-    "digit_8",      "digit_9",
+    "digit_8",      "digit_9",       "retro_a",       "retro_b",      "retro_x",       "retro_y",
+    "retro_l",      "retro_r",       "retro_l2",      "retro_r2",     "retro_select",  "retro_start",
 };
 
 std::string normalize(std::string_view name) {

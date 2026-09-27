@@ -62,6 +62,10 @@ bool MpvPlayer::consumeEndOfFile() {
     return false;
 }
 
+bool MpvPlayer::consumePlaybackError() {
+    return false;
+}
+
 void MpvPlayer::ensureFbo(int /*width*/, int /*height*/) {}
 
 void MpvPlayer::destroyFbo() {}

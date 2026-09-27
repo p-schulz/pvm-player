@@ -4,10 +4,13 @@
 // 3.3 core context, keyboard input through input::glfw's key map, and the
 // executable's own directory for both data and assets.
 
+#include <array>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "input/input_action.h"
+#include "input/gamepad_input.h"
 #include "input/keymap.h"
 #include "platform/platform.h"
 
@@ -42,6 +45,9 @@ public:
     std::string dataDir() const override { return exeDir_; }
     std::string assetDir() const override { return exeDir_; }
     std::vector<std::string> defaultMediaRoots() const override { return {"."}; }
+    // <exe dir>/cores, PVM_CORES_DIR, and the source tree's cores/ folder
+    // (where scripts/fetch_cores.sh puts them) in a development build.
+    std::vector<std::string> coreDirs() const override;
 
     void setKeepAwake(bool on) override;
     void requestQuit() override;
@@ -66,6 +72,14 @@ private:
     bool glfwInitialized_ = false;
     bool imguiInitialized_ = false;
     input::KeyMap keyMap_;
+
+    // The first connected gamepad (GLFW's standardised layout), polled once
+    // per pollEvents() and turned into actions by the shared translator.
+    void pollGamepad(double now);
+    std::unique_ptr<input::PadTranslator> pad_;
+    bool padWasPresent_ = false;
+    std::array<bool, 15> padButtons_{};     // GLFW_GAMEPAD_BUTTON_LAST + 1
+    std::array<bool, 2> triggerSeenRest_{};  // some drivers report 0 until first moved
 
     // Filled by the GLFW callbacks (and the macOS media-key tap) while
     // glfwPollEvents() runs; drained by pollEvents().

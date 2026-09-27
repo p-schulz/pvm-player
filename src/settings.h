@@ -85,6 +85,16 @@ struct AppSettings {
     // Decode video with the platform's hardware decoder (see
     // Platform::defaultHardwareDecoding() for the default).
     bool hardwareDecoding = false;
+
+    // Games (libretro cores): how the picture is scaled (App's kRetroScaleNames),
+    // its aspect (kRetroAspectNames), smooth or sharp filtering, and where the
+    // game browser was last.
+    int retroScaleIndex = 0;
+    int retroAspectIndex = 0;
+    bool retroSmooth = true;
+    std::string retroLastDirectory;
+    // Where the game browser starts (a folder picker in Settings); empty = the media start directory.
+    std::string retroStartDirectory;
 };
 
 // Reads `path` and overwrites the matching fields of `settings` for any

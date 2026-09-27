@@ -199,9 +199,10 @@ if ($Check -and $script:MissingRequired.Count -gt 0) { Write-Host ''; Write-Host
 # -------------------------------------------------------------- 2. thirdparty --
 Write-Step 'Vendored sources (thirdparty\)'
 $needThirdparty = -not ((Test-Path 'thirdparty\glad\src\gl.c') -and (Test-Path 'thirdparty\imgui\imgui.cpp') -and
-                        (Test-Path 'thirdparty\imgui\backends\imgui_impl_glfw.cpp'))
+                        (Test-Path 'thirdparty\imgui\backends\imgui_impl_glfw.cpp') -and
+                        (Test-Path 'thirdparty\libretro\libretro.h') -and (Test-Path 'thirdparty\miniaudio\miniaudio.h'))
 if (-not $needThirdparty) {
-    Write-Ok 'glad, Dear ImGui'
+    Write-Ok 'glad, Dear ImGui, libretro.h, miniaudio'
     if (Test-Path 'thirdparty\json\nlohmann\json.hpp') { Write-Ok 'nlohmann/json' }
     else { Write-Warn 'nlohmann/json not vendored; CMake fetches it' }
 } elseif ($Check) {

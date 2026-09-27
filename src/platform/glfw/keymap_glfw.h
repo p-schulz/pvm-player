@@ -18,6 +18,12 @@ namespace input::glfw {
 constexpr int kScancodeBase = 0x10000;
 int inputCode(int glfwKey, int scancode);
 
+// KeyMap codes for the buttons of a gamepad (GLFW's standardised layout,
+// GLFW_GAMEPAD_BUTTON_*): kPadButtonBase plus the button. The sticks and
+// triggers are axes and come in through PadTranslator (input/gamepad_input.h).
+constexpr int kPadButtonBase = 1 << 22;
+constexpr int padCode(int glfwGamepadButton) { return kPadButtonBase + glfwGamepadButton; }
+
 // GLFW_PRESS / GLFW_REPEAT / GLFW_RELEASE -> Phase.
 std::optional<Phase> phaseFromGlfwAction(int glfwAction);
 

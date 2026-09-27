@@ -46,6 +46,7 @@ AndroidPlatform::AndroidPlatform(android_app* app)
         LOGE("AttachCurrentThread failed; calls into Java are unavailable");
         env_ = nullptr;
     }
+    nativeLibDir_ = activityString("nativeLibraryPath");
     cacheDir_ = activityString("cachePath");
     if (cacheDir_.empty()) {
         cacheDir_ = dataDir_ + "/cache";

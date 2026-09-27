@@ -38,6 +38,8 @@ constexpr std::pair<const char*, int> kNamedKeys[] = {
     {"HOME", AKEYCODE_MOVE_HOME},
     {"END", AKEYCODE_MOVE_END},
     {"BACK", AKEYCODE_BACK},
+    {"LEFT_SHIFT", AKEYCODE_SHIFT_LEFT},
+    {"RIGHT_SHIFT", AKEYCODE_SHIFT_RIGHT},
     {"PAD_A", AKEYCODE_BUTTON_A},
     {"PAD_B", AKEYCODE_BUTTON_B},
     {"PAD_X", AKEYCODE_BUTTON_X},
@@ -127,6 +129,35 @@ KeyMap defaultKeyMap() {
     map.bind(AKEYCODE_BUTTON_SELECT, Action::NextSection);
     map.bind(AKEYCODE_BUTTON_SELECT, Action::AspectRatio);
     map.bind(AKEYCODE_BUTTON_THUMBR, Action::VideoScale);  // pillarbox / stretch / full width
+    map.bind(AKEYCODE_BUTTON_THUMBL, Action::ToggleFavorite);
+
+    // Games. Android names the face buttons by position in the Xbox layout
+    // (A bottom, B right, X left, Y top); the RetroPad is laid out the same
+    // way (B bottom, A right, Y left, X top), so they cross over. A trigger
+    // pulled as an axis is L2/R2 as well (see defaultAnalogBindings()).
+    map.bind(AKEYCODE_BUTTON_A, Action::RetroB);
+    map.bind(AKEYCODE_BUTTON_B, Action::RetroA);
+    map.bind(AKEYCODE_BUTTON_X, Action::RetroY);
+    map.bind(AKEYCODE_BUTTON_Y, Action::RetroX);
+    map.bind(AKEYCODE_BUTTON_L1, Action::RetroL);
+    map.bind(AKEYCODE_BUTTON_R1, Action::RetroR);
+    map.bind(AKEYCODE_BUTTON_L2, Action::RetroL2);
+    map.bind(AKEYCODE_BUTTON_R2, Action::RetroR2);
+    map.bind(AKEYCODE_BUTTON_START, Action::RetroStart);
+    map.bind(AKEYCODE_BUTTON_SELECT, Action::RetroSelect);
+    // ...and on a keyboard, as on the desktop.
+    map.bind(AKEYCODE_X, Action::RetroA);
+    map.bind(AKEYCODE_Z, Action::RetroB);
+    map.bind(AKEYCODE_S, Action::RetroX);
+    map.bind(AKEYCODE_A, Action::RetroY);
+    map.bind(AKEYCODE_Q, Action::RetroL);
+    map.bind(AKEYCODE_W, Action::RetroR);
+    map.bind(AKEYCODE_E, Action::RetroL2);
+    map.bind(AKEYCODE_T, Action::RetroR2);
+    map.bind(AKEYCODE_ENTER, Action::RetroStart);
+    map.bind(AKEYCODE_NUMPAD_ENTER, Action::RetroStart);
+    map.bind(AKEYCODE_SHIFT_RIGHT, Action::RetroSelect);
+    map.bind(AKEYCODE_TAB, Action::RetroSelect);
 
     // Media keys (a headset, a keyboard, the system's media buttons). The
     // volume keys are deliberately not bound: they stay with the system.
@@ -148,6 +179,7 @@ KeyMap defaultKeyMap() {
     map.bind(AKEYCODE_TAB, Action::NextSection);
     map.bind(AKEYCODE_SPACE, Action::PlayPause);
     map.bind(AKEYCODE_F, Action::PlayPause);
+    map.bind(AKEYCODE_F, Action::ToggleFavorite);  // games: only active in the ROM browser/favorites/in-game
     map.bind(AKEYCODE_COMMA, Action::VolumeDown);
     map.bind(AKEYCODE_PERIOD, Action::VolumeUp);
     map.bind(AKEYCODE_M, Action::ToggleOsd);

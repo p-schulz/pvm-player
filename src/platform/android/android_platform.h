@@ -73,6 +73,9 @@ public:
     std::string dataDir() const override { return dataDir_; }
     std::string assetDir() const override { return dataDir_ + "/assets"; }
     std::string cacheDir() const override { return cacheDir_; }
+    // Only the native library directory: Android refuses to load code from
+    // anywhere the app can write to. The cores are packaged into the APK.
+    std::vector<std::string> coreDirs() const override { return {nativeLibDir_}; }
     // Movies and Music on the primary storage plus the root of every mounted
     // removable volume (SD card, USB), from StorageManager.
     std::vector<std::string> defaultMediaRoots() const override;
@@ -110,6 +113,7 @@ private:
     JNIEnv* env_ = nullptr;  // this thread's, attached in the constructor
     std::string dataDir_;
     std::string cacheDir_;
+    std::string nativeLibDir_;
     input::PadTranslator pad_;
     mutable uint32_t nextSimulatedGroup_ = 1;
 

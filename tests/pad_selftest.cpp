@@ -199,6 +199,49 @@ void testTapVersusHold() {
     CHECK(count(events, Action::FastextYellow, Phase::Press) == 0);
 }
 
+// A game must see its button go down when it is pressed, even when the button
+// also has a hold binding (which delays the menu actions until release).
+void testRetroButtonsIgnoreHoldDelay() {
+    input::KeyMap map;
+    map.bind(kBtnY, Action::MediaInfo);
+    map.bind(kBtnY, Action::RetroX);
+    map.bind(kBtnY | input::kHoldFlag, Action::PageEntry);
+    PadTranslator pad(map, {});
+    pad.keyDown(kBtnY, 0.0);
+    auto events = take(pad);
+    CHECK(events.size() == 1 && events[0].action == Action::RetroX && events[0].phase == Phase::Press);
+    pad.keyUp(kBtnY, 0.2);  // a tap: the menu actions now, the game's button up
+    events = take(pad);
+    CHECK(count(events, Action::RetroX, Phase::Release) == 1);
+    CHECK(count(events, Action::RetroX, Phase::Press) == 0);
+    CHECK(count(events, Action::MediaInfo, Phase::Press) == 1);
+
+    pad.keyDown(kBtnY, 1.0);
+    take(pad);
+    pad.update(1.5);  // held: the hold action fires, the game's button stays down
+    events = take(pad);
+    CHECK(count(events, Action::PageEntry, Phase::Press) == 1);
+    CHECK(count(events, Action::RetroX, Phase::Release) == 0);
+    pad.keyUp(kBtnY, 1.8);
+    events = take(pad);
+    CHECK(count(events, Action::RetroX, Phase::Release) == 1);
+}
+
+// The game screen treats the D-pad separately from the RetroPad buttons, so a
+// button that is one must not be the other.
+void testAndroidRetroButtonsAreNotDirections() {
+    const input::KeyMap map = input::android::defaultKeyMap();
+    for (int code = 0; code < input::kVirtualEnd; ++code) {
+        bool retro = false, direction = false;
+        for (Action a : map.actionsFor(code)) {
+            retro |= input::isRetroAction(a);
+            direction |= a == Action::Up || a == Action::Down || a == Action::Left || a == Action::Right;
+        }
+        CHECK(!(retro && direction));
+        if (code == 400) code = input::kVirtualBase - 1;
+    }
+}
+
 void testAnalogTrigger() {
     PadTranslator pad = makePad();
     pad.setAxis(PadAxis::RightTrigger, 0.05f, 0.0);  // inside the dead zone
@@ -208,7 +251,9 @@ void testAnalogTrigger() {
     pad.setAxis(PadAxis::RightTrigger, 0.55f, 0.0);  // depth 0.5 past the dead zone
     pad.update(0.0);
     auto events = take(pad);
-    CHECK(events.size() == 1 && events[0].action == Action::SeekFwd && events[0].phase == Phase::Press);
+    // The trigger is also the game's R2 (held, so it needs no repeat ticks).
+    CHECK(events.size() == 2 && events[0].action == Action::SeekFwd && events[0].phase == Phase::Press);
+    CHECK(count(events, Action::RetroR2, Phase::Press) == 1);
     CHECK(std::fabs(events[0].value - 0.25f) < 0.001f);  // depth 0.5 x scale 0.5
 
     pad.update(0.05);
@@ -216,12 +261,14 @@ void testAnalogTrigger() {
     pad.setAxis(PadAxis::RightTrigger, 1.0f, 0.06);
     pad.update(0.08);
     events = take(pad);
-    CHECK(events.size() == 1 && events[0].phase == Phase::Repeat);
+    CHECK(count(events, Action::SeekFwd, Phase::Repeat) == 1);
     CHECK(std::fabs(events[0].value - 0.5f) < 0.001f);  // full pull
 
     pad.setAxis(PadAxis::RightTrigger, 0.0f, 0.1);
     pad.update(0.1);
-    CHECK(count(take(pad), Action::SeekFwd, Phase::Release) == 1);
+    events = take(pad);
+    CHECK(count(events, Action::SeekFwd, Phase::Release) == 1);
+    CHECK(count(events, Action::RetroR2, Phase::Release) == 1);
     pad.update(0.5);
     CHECK(take(pad).empty());
 }
@@ -291,9 +338,10 @@ void testAndroidDefaults() {
     CHECK(emits(map, AKEYCODE_BUTTON_THUMBR, Action::VideoScale));
     CHECK(emits(map, AKEYCODE_MEDIA_PLAY_PAUSE, Action::PlayPause));
     CHECK(emits(map, AKEYCODE_ENTER, Action::Confirm));  // keyboards keep working
-    // The volume keys stay with the system; L2/R2 are analog only.
+    // The volume keys stay with the system; L2/R2 seek as triggers and are
+    // only the game's L2/R2 as buttons.
     CHECK(map.actionsFor(AKEYCODE_VOLUME_UP).empty());
-    CHECK(map.actionsFor(AKEYCODE_BUTTON_L2).empty());
+    CHECK(map.actionsFor(AKEYCODE_BUTTON_L2).size() == 1 && emits(map, AKEYCODE_BUTTON_L2, Action::RetroL2));
 }
 
 // Each screen reacts to a subset of actions (mirroring App::handleInput). Two
@@ -304,7 +352,13 @@ void testAndroidNoScreenSeesTwoActionsFromOneButton() {
         {"root", {Action::Up, Action::Down, Action::Confirm, Action::Back, Action::OpenSettings, Action::NextSection,
                   Action::ToggleCrt}},
         {"browser", {Action::Up, Action::Down, Action::PageUp, Action::PageDown, Action::Confirm, Action::Back,
-                     Action::BackSoft, Action::OpenSettings, Action::ToggleCrt}},
+                     Action::BackSoft, Action::OpenSettings, Action::ToggleCrt, Action::ToggleFavorite}},
+        {"tv", {Action::Up, Action::Down, Action::Confirm, Action::OpenSettings, Action::Back, Action::BackSoft,
+                Action::ToggleCrt}},
+        {"games-menu", {Action::Up, Action::Down, Action::Confirm, Action::OpenSettings, Action::Back,
+                        Action::BackSoft, Action::ToggleCrt}},
+        {"game-favorites", {Action::Up, Action::Down, Action::Confirm, Action::ToggleFavorite,
+                            Action::OpenSettings, Action::Back, Action::BackSoft, Action::ToggleCrt}},
         {"settings", {Action::Up, Action::Down, Action::PageUp, Action::PageDown, Action::Left, Action::Right,
                       Action::Confirm, Action::Back, Action::BackSoft, Action::ToggleCrt}},
         {"picker", {Action::Up, Action::Down, Action::PageUp, Action::PageDown, Action::Confirm, Action::Back,
@@ -381,6 +435,8 @@ int main() {
     testTwoSourcesOfOneDirection();
     testAxisHysteresis();
     testTapVersusHold();
+    testRetroButtonsIgnoreHoldDelay();
+    testAndroidRetroButtonsAreNotDirections();
     testAnalogTrigger();
     testRightStickVolumeAndScroll();
     testReleaseAll();

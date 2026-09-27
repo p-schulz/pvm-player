@@ -1,6 +1,6 @@
 # Windows counterpart of fetch_thirdparty.sh: restores the vendored sources under
 # thirdparty\ from upstream -- Dear ImGui (only the files the build uses),
-# nlohmann/json (single header) and the glad OpenGL 3.3 loader (generated with
+# nlohmann/json, libretro.h and miniaudio (single headers) and the glad OpenGL 3.3 loader (generated with
 # glad2, which needs Python). Only what is missing is fetched; -Force redoes it.
 # Keep the pinned versions in sync with fetch_thirdparty.sh.
 #   powershell -ExecutionPolicy Bypass -File scripts\fetch_thirdparty.ps1 [-Force]
@@ -10,6 +10,10 @@ $ErrorActionPreference = 'Stop'
 $ImguiTag   = 'v1.92.8'
 $JsonVersion = 'v3.11.3'
 $JsonSha256  = '9bea4c8066ef4a1c206b2be5a36302f8926f7fdc6087af5d20b417d0cf103ea6'
+$LibretroCommit = 'e5644bdd2761e3ae91f4c86da5ffc9f2fdc6c34a'
+$LibretroSha256 = 'c928d8f176b4e4bc45ee2a41ef236d25cc19e9bc2abc2e2e4c32cf08d6423801'
+$MiniaudioVersion = '0.11.25'
+$MiniaudioSha256  = 'ac7af4de748b7e26b777f37e01cee313a308a7296a3eb080e2906b320cc55c89'
 
 $Root = Split-Path -Parent $PSScriptRoot
 $Tp = if ($env:PVM_THIRDPARTY) { $env:PVM_THIRDPARTY } else { Join-Path $Root 'thirdparty' }
@@ -61,6 +65,30 @@ try {
         New-Item -ItemType Directory -Force -Path (TP 'json','nlohmann') | Out-Null
         Copy-Item $header (TP 'json','nlohmann','json.hpp') -Force
         Get-File "https://raw.githubusercontent.com/nlohmann/json/$JsonVersion/LICENSE.MIT" (TP 'json','LICENSE.txt')
+    }
+
+    # ---- libretro.h (the API header for game cores)
+    if (-not $Force -and (Test-Path (TP 'libretro','libretro.h'))) {
+        Write-Host 'libretro: present'
+    } else {
+        Write-Host "libretro.h $LibretroCommit"
+        $header = Join-Path $Tmp 'libretro.h'
+        Get-File "https://raw.githubusercontent.com/libretro/libretro-common/$LibretroCommit/include/libretro.h" $header
+        if ((Get-FileHash -Algorithm SHA256 $header).Hash.ToLower() -ne $LibretroSha256) { throw 'checksum mismatch for libretro.h' }
+        New-Item -ItemType Directory -Force -Path (TP 'libretro') | Out-Null
+        Copy-Item $header (TP 'libretro','libretro.h') -Force
+    }
+
+    # ---- miniaudio (audio output for game cores)
+    if (-not $Force -and (Test-Path (TP 'miniaudio','miniaudio.h'))) {
+        Write-Host 'miniaudio: present'
+    } else {
+        Write-Host "miniaudio $MiniaudioVersion"
+        $header = Join-Path $Tmp 'miniaudio.h'
+        Get-File "https://raw.githubusercontent.com/mackron/miniaudio/$MiniaudioVersion/miniaudio.h" $header
+        if ((Get-FileHash -Algorithm SHA256 $header).Hash.ToLower() -ne $MiniaudioSha256) { throw 'checksum mismatch for miniaudio.h' }
+        New-Item -ItemType Directory -Force -Path (TP 'miniaudio') | Out-Null
+        Copy-Item $header (TP 'miniaudio','miniaudio.h') -Force
     }
 
     # ---- glad

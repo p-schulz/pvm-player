@@ -63,6 +63,9 @@ public:
     // The OS may clear it at any time, which the services tolerate; on
     // desktop it is a subfolder of dataDir().
     virtual std::string cacheDir() const { return dataDir() + "/cache"; }
+    // Directories searched for libretro cores (shared libraries named
+    // *_libretro*), in priority order.
+    virtual std::vector<std::string> coreDirs() const { return {dataDir() + "/cores"}; }
     // Media folders to browse when none were given explicitly.
     virtual std::vector<std::string> defaultMediaRoots() const = 0;
 

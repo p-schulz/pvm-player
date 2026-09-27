@@ -234,7 +234,26 @@ set(PVM_APP_SOURCES
   src/ui/file_browser.cpp
   src/ui/style.cpp
   src/teletext/teletext_view.cpp
+  src/retro/retro_core.cpp
+  src/retro/audio_out.cpp
+  src/retro/session.cpp
 )
+
+# libretro cores (games) are loaded at run time; miniaudio plays their sound.
+# Both are vendored headers.
+function(pvm_link_retro target)
+  target_include_directories(${target} PRIVATE
+    ${CMAKE_SOURCE_DIR}/thirdparty/libretro
+    ${CMAKE_SOURCE_DIR}/thirdparty/miniaudio)
+  target_link_libraries(${target} PRIVATE ${CMAKE_DL_LIBS})
+  if(APPLE)
+    target_link_libraries(${target} PRIVATE "-framework CoreFoundation" "-framework CoreAudio"
+                                            "-framework AudioToolbox")
+  elseif(NOT WIN32 AND NOT ANDROID)
+    find_package(Threads REQUIRED)
+    target_link_libraries(${target} PRIVATE Threads::Threads m)
+  endif()
+endfunction()
 
 if(ANDROID)
   # Built as libpvm_player.so by the Gradle project in android/ and loaded by
@@ -271,6 +290,7 @@ if(ANDROID)
     ${PVM_APP_SOURCES}
   )
   target_include_directories(pvm_player PRIVATE src)
+  pvm_link_retro(pvm_player)
   target_link_libraries(pvm_player PRIVATE
     game-activity::game-activity_static
     imgui teletext_core input_android
@@ -294,6 +314,9 @@ else()
   )
 
   target_include_directories(pvm_player PRIVATE src)
+  pvm_link_retro(pvm_player)
+  # Where scripts/fetch_cores.sh puts cores; searched by a build run from here.
+  target_compile_definitions(pvm_player PRIVATE PVM_DEV_CORES_DIR="${CMAKE_SOURCE_DIR}/cores")
 
   target_link_libraries(pvm_player PRIVATE glfw glad mpv imgui teletext_core input_glfw)
 

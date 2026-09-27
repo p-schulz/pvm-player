@@ -45,6 +45,15 @@ android {
     // through the DT_NEEDED entry of libpvm_player.so, so it only has to be
     // in the APK's native library directory.
     sourceSets["main"].jniLibs.srcDir(File(repoRoot, "thirdparty/libmpv-android/lib"))
+    // libretro cores (scripts/fetch_cores.sh --android), packaged as native
+    // libraries too. The player looks them up by file name, so they must be
+    // unpacked to disk, not mapped from inside the APK.
+    sourceSets["main"].jniLibs.srcDir(File(repoRoot, "thirdparty/cores-android"))
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 
     buildTypes {
         release {

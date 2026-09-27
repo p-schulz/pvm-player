@@ -7,11 +7,15 @@
 
 #include "input/input_action.h"
 #include "mpv_player.h"
+#include "retro/session.h"
 #include "teletext/data_service.h"
 #include "teletext/navigator.h"
 #include "teletext/page.h"
 #include "ui/file_browser.h"
 #include "ui/menu.h"
+
+// What a root-menu entry does (their order is kRootItems in app.cpp).
+enum class RootItem { PlayMedia, Tv, Tagesschau, News, Games, Ard, Zdf, Settings, Quit };
 
 class Platform;
 struct ImVec2;
@@ -63,14 +67,30 @@ public:
         bool paused = false;
         std::string title;
         bool fromTeletext = false;
+        bool fromTv = false;
         int mediaKind = 0;
+        // A running game instead (path is its ROM): resumed from a save state
+        // taken for the occasion.
+        bool game = false;
     };
-    PlaybackSnapshot snapshotPlayback() const;
+    PlaybackSnapshot snapshotPlayback();
     void restorePlayback(const PlaybackSnapshot& snapshot);
 
 private:
-    enum class Screen { RootMenu, FileBrowser, Settings, PickStartDirectory, Playing, News };
+    enum class Screen {
+    RootMenu,
+    FileBrowser,
+    Settings,
+    PickStartDirectory,
+    Playing,
+    News,
+    Game,
+    TvMenu,
+    GamesMenu,      // GAMES root-menu entry: browse ROMs, or Favorites
+    GameFavorites,  // favorited ROMs, added from the browser/in-game menu (ToggleFavorite)
+};
     enum class MediaKind { Unknown, Video, Audio };
+
 
     // A single adjustable settings-screen row, described generically so the
     // (now fairly long) settings list doesn't need a hand-written
@@ -210,9 +230,9 @@ private:
     // "fastext_red") or a key name as in keys.cfg, the latter translated by
     // the platform's real key map.
     void injectSimulatedKey(const std::string& token);
-    void openTeletext(int rootMenuIndex);
-    // Root-menu index (1..4) of the section after the current/last one, wrapping.
-    int nextSectionIndex() const;
+    void openTeletext(RootItem section);
+    // The teletext section after the current/last one, in menu order, wrapping.
+    RootItem nextSection() const;
     // Changes the playback volume by `points` (fractions accumulate across
     // calls, so analog input slower than one point per event still moves it).
     void adjustVolume(float points);
@@ -226,7 +246,35 @@ private:
     // player (remembering to return to this same teletext page on stop).
     void activateTeletextSelection();
     void activateRootMenuItem(int index);
-    void enterFileBrowser(std::vector<std::string> extensions);
+    // Plays TV channel `index` (kTvChannels) and returns to the TV menu when it stops.
+    void playTvChannel(int index);
+    // GAMES root-menu entry: index 0 browses ROMs, 1 opens Favorites.
+    void activateGamesMenuItem(int index);
+    bool isGameFavorite(const std::string& path) const;
+    // Adds `path` to favorites, or removes it if already there; persists the
+    // change, refreshes the Favorites screen if it's on screen, and toasts.
+    void toggleGameFavorite(const std::string& path);
+    // Rebuilds gameFavoritesMenu_'s labels from gameFavorites_ (paths' basenames).
+    void refreshGameFavoritesMenu();
+    void loadGameFavorites(const std::string& path);
+    void saveGameFavorites() const;
+    void enterFileBrowser(std::vector<std::string> extensions, bool games = false);
+
+    // Games (libretro cores). startGame() picks the core for the ROM and
+    // switches to Screen::Game; the game screen passes the pad to the core,
+    // and its own menu (chord Start+Select, Escape/M on a keyboard) holds
+    // save states, reset and the picture options.
+    void startGame(const std::string& romPath);
+    void closeGame();
+    void handleGameInput(const input::InputEvent& event);
+    void openGameMenu();
+    std::vector<SettingsRowDesc> buildGameMenuRows();
+    void renderGameFrame(int width, int height);
+    void renderGameHud();
+    void renderGameMenu();
+    // A short message at the bottom of the screen (errors, "state saved").
+    void showToast(const std::string& text);
+    void renderToast();
     // Common bookkeeping for leaving Screen::Playing back to the root menu
     // (explicit stop and natural end-of-file both call this): remembers
     // the file browser's current directory as lastUsedDirectory_ and
@@ -408,6 +456,26 @@ private:
 
     MediaKind currentMediaKind_ = MediaKind::Unknown;
 
+    // Games: the cores found at startup, the running game (retro_.active()
+    // while Screen::Game), and its menu and picture options (persisted).
+    std::vector<retro::CoreInfo> retroCores_;
+    retro::Session retro_;
+    bool browsingGames_ = false;  // the file browser is listing ROMs
+    bool gameMenuVisible_ = false;
+    int gameMenuRow_ = 0;
+    int gameSlot_ = 0;
+    bool retroStartDown_ = false;
+    bool retroSelectDown_ = false;
+    bool suspended_ = false;
+    int retroScaleIndex_ = 0;
+    int retroAspectIndex_ = 0;
+    bool retroSmooth_ = true;
+    std::string retroLastDirectory_;
+    std::string retroStartDirectory_;
+    bool pickingGameDirectory_ = false;  // Screen::PickStartDirectory is choosing the ROM folder
+    std::string toastText_;
+    double toastHideAtTime_ = 0.0;
+
     // Teletext-style page readers: the root menu's NEWS, TAGESSCHAU, ARD and
     // ZDF entries. Each section owns its data (a TeletextDataService --
     // either a NewsService for RSS/Atom, or an MvwService for the
@@ -437,7 +505,8 @@ private:
     TeletextSection ardSection_;
     TeletextSection zdfSection_;
     TeletextSection* activeTeletext_ = &newsSection_;
-    int lastSectionMenuIndex_ = 0;  // root-menu index (1..4) of the section last opened; 0 = none yet
+    bool sectionOpened_ = false;  // a teletext section has been opened; lastSection_ is valid
+    RootItem lastSection_ = RootItem::Tagesschau;
 
     // Direct page entry without digit keys (gamepad): three digits, one of
     // which is selected. Up/Down changes it, Left/Right moves, Confirm goes
@@ -471,6 +540,21 @@ private:
 
     Screen screen_ = Screen::RootMenu;
     Menu rootMenu_;
+    Menu tvMenu_;
+    bool cameFromTv_ = false;  // playback was started from the TV menu
+    Menu gamesMenu_;
+    // Favorited ROM paths (absolute), persisted to dataDir()/game_favorites.cfg,
+    // one per line -- see loadGameFavorites()/saveGameFavorites(). gameFavoritesMenu_
+    // mirrors it 1:1 (basenames) for drawScrollableRows()/selection; kept in sync
+    // by refreshGameFavoritesMenu() whenever the list changes.
+    std::vector<std::string> gameFavorites_;
+    Menu gameFavoritesMenu_;
+    std::string gameFavoritesPath_;  // dataDir()/game_favorites.cfg
+    // Backs the in-game menu's FAVORITE row (see buildGameMenuRows()): the
+    // SettingsRowDesc bool machinery needs an addressable bool, not a computed one.
+    bool gameMenuFavoriteFlag_ = false;
+    int tvChannelIndex_ = 0;   // the channel playing (valid while cameFromTv_)
+    bool tvTriedFallback_ = false;
     FileBrowser fileBrowser_;
     std::vector<std::string> mediaRoots_ = {"."};
     // True when the roots were given on the command line (a deliberate

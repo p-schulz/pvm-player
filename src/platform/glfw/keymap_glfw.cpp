@@ -2,6 +2,8 @@
 
 #include <GLFW/glfw3.h>
 
+#include "input/gamepad_input.h"
+
 #include <cctype>
 #include <cstdlib>
 #include <string>
@@ -35,6 +37,8 @@ constexpr std::pair<const char*, int> kNamedKeys[] = {
     {"END", GLFW_KEY_END},
     {"INSERT", GLFW_KEY_INSERT},
     {"DELETE", GLFW_KEY_DELETE},
+    {"LEFT_SHIFT", GLFW_KEY_LEFT_SHIFT},
+    {"RIGHT_SHIFT", GLFW_KEY_RIGHT_SHIFT},
 };
 
 std::string upper(std::string_view s) {
@@ -84,6 +88,7 @@ KeyMap defaultKeyMap() {
 
     map.bind(GLFW_KEY_SPACE, Action::PlayPause);
     map.bind(GLFW_KEY_F, Action::PlayPause);
+    map.bind(GLFW_KEY_F, Action::ToggleFavorite);  // games: only active in the ROM browser/favorites/in-game
 #ifdef _WIN32
     map.bind(kScancodeBase + kWin32MediaPlayPauseScancode, Action::PlayPause);
 #endif
@@ -115,11 +120,96 @@ KeyMap defaultKeyMap() {
         map.bind(GLFW_KEY_0 + d, digit);
         map.bind(GLFW_KEY_KP_0 + d, digit);
     }
+
+    // Games: the arrow keys are the D-pad; the rest follow RetroArch's
+    // keyboard layout. Enter (start) also confirms, Escape opens the game menu.
+    map.bind(GLFW_KEY_X, Action::RetroA);
+    map.bind(GLFW_KEY_Z, Action::RetroB);
+    map.bind(GLFW_KEY_S, Action::RetroX);
+    map.bind(GLFW_KEY_A, Action::RetroY);
+    map.bind(GLFW_KEY_Q, Action::RetroL);
+    map.bind(GLFW_KEY_W, Action::RetroR);
+    map.bind(GLFW_KEY_E, Action::RetroL2);
+    map.bind(GLFW_KEY_T, Action::RetroR2);
+    map.bind(GLFW_KEY_ENTER, Action::RetroStart);
+    map.bind(GLFW_KEY_KP_ENTER, Action::RetroStart);
+    map.bind(GLFW_KEY_RIGHT_SHIFT, Action::RetroSelect);
+    map.bind(GLFW_KEY_TAB, Action::RetroSelect);
+
+    // Gamepad: the same layout as the Android handheld defaults. GLFW names
+    // buttons by position in the Xbox layout (A is the bottom one).
+    for (const int code : {padCode(GLFW_GAMEPAD_BUTTON_DPAD_UP), int(kLeftStickUp)}) map.bind(code, Action::Up);
+    for (const int code : {padCode(GLFW_GAMEPAD_BUTTON_DPAD_DOWN), int(kLeftStickDown)}) map.bind(code, Action::Down);
+    for (const int code : {padCode(GLFW_GAMEPAD_BUTTON_DPAD_LEFT), int(kLeftStickLeft)}) map.bind(code, Action::Left);
+    for (const int code : {padCode(GLFW_GAMEPAD_BUTTON_DPAD_RIGHT), int(kLeftStickRight)}) {
+        map.bind(code, Action::Right);
+    }
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_A), Action::Confirm);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_A), Action::PlayPause);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_A), Action::RetroB);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_B), Action::Back);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_B), Action::RetroA);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_X), Action::ToggleCrt);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_X), Action::RetroY);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_Y), Action::MediaInfo);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_Y), Action::FastextYellow);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_Y), Action::RetroX);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_Y) | kHoldFlag, Action::PageEntry);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_LEFT_BUMPER), Action::PageUp);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_LEFT_BUMPER), Action::SeekBack);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_LEFT_BUMPER), Action::FastextRed);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_LEFT_BUMPER), Action::RetroL);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER), Action::PageDown);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER), Action::SeekFwd);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER), Action::FastextGreen);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER), Action::RetroR);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_START), Action::OpenSettings);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_START), Action::ToggleOsd);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_START), Action::FastextBlue);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_START), Action::RetroStart);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_BACK), Action::NextSection);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_BACK), Action::AspectRatio);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_BACK), Action::RetroSelect);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_RIGHT_THUMB), Action::VideoScale);
+    map.bind(padCode(GLFW_GAMEPAD_BUTTON_LEFT_THUMB), Action::ToggleFavorite);
     return map;
 }
 
 std::optional<int> codeFromName(std::string_view rawName) {
     const std::string name = upper(rawName);
+    if (name.rfind("HOLD_", 0) == 0) {
+        const std::optional<int> base = codeFromName(name.substr(5));
+        if (!base || (*base & kHoldFlag)) {
+            return std::nullopt;
+        }
+        return *base | kHoldFlag;
+    }
+    static const std::pair<const char*, int> kPadNames[] = {
+        {"PAD_A", padCode(GLFW_GAMEPAD_BUTTON_A)},
+        {"PAD_B", padCode(GLFW_GAMEPAD_BUTTON_B)},
+        {"PAD_X", padCode(GLFW_GAMEPAD_BUTTON_X)},
+        {"PAD_Y", padCode(GLFW_GAMEPAD_BUTTON_Y)},
+        {"PAD_L1", padCode(GLFW_GAMEPAD_BUTTON_LEFT_BUMPER)},
+        {"PAD_R1", padCode(GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER)},
+        {"PAD_START", padCode(GLFW_GAMEPAD_BUTTON_START)},
+        {"PAD_SELECT", padCode(GLFW_GAMEPAD_BUTTON_BACK)},
+        {"PAD_MODE", padCode(GLFW_GAMEPAD_BUTTON_GUIDE)},
+        {"PAD_THUMBL", padCode(GLFW_GAMEPAD_BUTTON_LEFT_THUMB)},
+        {"PAD_THUMBR", padCode(GLFW_GAMEPAD_BUTTON_RIGHT_THUMB)},
+        {"DPAD_UP", padCode(GLFW_GAMEPAD_BUTTON_DPAD_UP)},
+        {"DPAD_DOWN", padCode(GLFW_GAMEPAD_BUTTON_DPAD_DOWN)},
+        {"DPAD_LEFT", padCode(GLFW_GAMEPAD_BUTTON_DPAD_LEFT)},
+        {"DPAD_RIGHT", padCode(GLFW_GAMEPAD_BUTTON_DPAD_RIGHT)},
+        {"LSTICK_UP", kLeftStickUp},
+        {"LSTICK_DOWN", kLeftStickDown},
+        {"LSTICK_LEFT", kLeftStickLeft},
+        {"LSTICK_RIGHT", kLeftStickRight},
+    };
+    for (const auto& [padName, code] : kPadNames) {
+        if (name == padName) {
+            return code;
+        }
+    }
     if (name.size() == 1) {
         const char c = name[0];
         if (c >= 'A' && c <= 'Z') return GLFW_KEY_A + (c - 'A');

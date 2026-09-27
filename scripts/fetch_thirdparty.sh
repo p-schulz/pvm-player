@@ -4,6 +4,8 @@
 #   imgui/  Dear ImGui 1.92.8: the core, the demo window and the GLFW,
 #           OpenGL 3 and Android backends (only the files the build uses)
 #   json/   nlohmann/json 3.11.3, the single header
+#   libretro/   libretro.h, the API header for game cores (MIT)
+#   miniaudio/  miniaudio.h, the single-header audio library (public domain / MIT-0)
 #   glad/   the OpenGL 3.3 core loader, generated with the glad2 tool
 #           (needs python3; installed into a throwaway virtualenv)
 #
@@ -14,6 +16,10 @@ set -euo pipefail
 IMGUI_TAG=v1.92.8
 JSON_VERSION=v3.11.3
 JSON_SHA256=9bea4c8066ef4a1c206b2be5a36302f8926f7fdc6087af5d20b417d0cf103ea6
+LIBRETRO_COMMIT=e5644bdd2761e3ae91f4c86da5ffc9f2fdc6c34a
+LIBRETRO_SHA256=c928d8f176b4e4bc45ee2a41ef236d25cc19e9bc2abc2e2e4c32cf08d6423801
+MINIAUDIO_VERSION=0.11.25
+MINIAUDIO_SHA256=ac7af4de748b7e26b777f37e01cee313a308a7296a3eb080e2906b320cc55c89
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TP="${PVM_THIRDPARTY:-$ROOT/thirdparty}"
@@ -57,6 +63,28 @@ fetch_json() {
     download "https://raw.githubusercontent.com/nlohmann/json/$JSON_VERSION/LICENSE.MIT" "$TP/json/LICENSE.txt"
 }
 
+fetch_libretro() {
+    if [ "$FORCE" = 0 ] && [ -f "$TP/libretro/libretro.h" ]; then echo "libretro: present"; return; fi
+    echo "libretro.h ($LIBRETRO_COMMIT)"
+    download "https://raw.githubusercontent.com/libretro/libretro-common/$LIBRETRO_COMMIT/include/libretro.h" "$TMP/libretro.h"
+    if [ "$(sha256 "$TMP/libretro.h")" != "$LIBRETRO_SHA256" ]; then
+        echo "checksum mismatch for libretro.h" >&2; exit 1
+    fi
+    mkdir -p "$TP/libretro"
+    cp "$TMP/libretro.h" "$TP/libretro/libretro.h"
+}
+
+fetch_miniaudio() {
+    if [ "$FORCE" = 0 ] && [ -f "$TP/miniaudio/miniaudio.h" ]; then echo "miniaudio: present"; return; fi
+    echo "miniaudio $MINIAUDIO_VERSION"
+    download "https://raw.githubusercontent.com/mackron/miniaudio/$MINIAUDIO_VERSION/miniaudio.h" "$TMP/miniaudio.h"
+    if [ "$(sha256 "$TMP/miniaudio.h")" != "$MINIAUDIO_SHA256" ]; then
+        echo "checksum mismatch for miniaudio.h" >&2; exit 1
+    fi
+    mkdir -p "$TP/miniaudio"
+    cp "$TMP/miniaudio.h" "$TP/miniaudio/miniaudio.h"
+}
+
 fetch_glad() {
     if [ "$FORCE" = 0 ] && [ -f "$TP/glad/src/gl.c" ] && [ -f "$TP/glad/include/glad/gl.h" ] &&
        [ -f "$TP/glad/include/KHR/khrplatform.h" ]; then
@@ -84,5 +112,7 @@ README
 
 fetch_imgui
 fetch_json
+fetch_libretro
+fetch_miniaudio
 fetch_glad
 echo "thirdparty/ is complete: $TP"
