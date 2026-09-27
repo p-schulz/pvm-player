@@ -1,9 +1,12 @@
+<img src="assets/pvm_icon.png" alt="" width="48" height="48" align="left">
+
 # PVM Player
 
 A fullscreen media player prototype styled after a Sony PVM broadcast
 monitor: a flat black, monospace, keyboard/remote-only on-screen menu, and
 an optional CRT post-process pass (scanlines, vignette, bloom, color tear)
 over whatever's playing.
+
 The platform abstraction branch for supporting Android was branched by Claude Code. Honestly, this allowed me to reuse almost all of the code. 
 
 <p align="center">
