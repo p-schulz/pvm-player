@@ -6,7 +6,7 @@
 # run scripts\setup.ps1 -Android first if they aren't.
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\build_apk.ps1
-#       release APK with gambatte + bsnes
+#       release APK with the default cores (see below)
 #   ... -Debug                    a debug build instead
 #   ... -Cores gambatte,mgba      specific cores instead of the default two
 #   ... -NoCores                  no game cores at all (smaller APK, no bundled GPL code)
@@ -17,7 +17,7 @@ param(
     [switch]$Debug,
     [switch]$NoCores,
     [switch]$Force,
-    [string[]]$Cores = @('gambatte', 'bsnes')
+    [string[]]$Cores = @('gambatte', 'bsnes', 'parallel_n64', 'swanstation')
 )
 $ErrorActionPreference = 'Stop'
 $Config = if ($Debug) { 'debug' } else { 'release' }
@@ -64,7 +64,7 @@ if ($NoCores) {
     & (Join-Path $PSScriptRoot 'fetch_cores.ps1') -Android -Cores $Cores
     Write-Host ''
     Write-Host 'Note: bundling these into an APK you pass on to someone else is a'
-    Write-Host 'GPL-covered combination (gambatte and bsnes are GPL) -- fine for your'
+    Write-Host 'GPL-covered combination (all four default cores are GPL) -- fine for your'
     Write-Host "own devices; see README.md's Games section for the licensing note."
 }
 

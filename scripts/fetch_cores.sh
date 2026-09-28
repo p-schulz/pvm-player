@@ -3,8 +3,9 @@
 # player finds them (a development build looks there; a copy of the player
 # looks in a "cores" folder next to itself, or in $PVM_CORES_DIR).
 #
-#   scripts/fetch_cores.sh                 # gambatte (Game Boy / Color) and bsnes (SNES)
-#   scripts/fetch_cores.sh gambatte mgba   # any core from the libretro buildbot
+#   scripts/fetch_cores.sh                 # the defaults: gambatte (GB/GBC), bsnes (SNES),
+#                                           # parallel_n64 (N64), swanstation (PS1)
+#   scripts/fetch_cores.sh gambatte mgba   # any core from the libretro buildbot instead
 #   scripts/fetch_cores.sh --list          # what is already in cores/
 #   scripts/fetch_cores.sh --android       # the arm64 Android builds, for the APK
 #
@@ -13,9 +14,12 @@
 # from the app's own native library directory).
 #
 # The cores come from https://buildbot.libretro.com/nightly/ ("latest" builds,
-# so nothing here is pinned); each has its own licence -- gambatte and bsnes
-# are GPL. They are downloaded for you to run, not bundled with the player.
-# PVM_CORES_DEST overrides the destination folder.
+# so nothing here is pinned); each has its own licence -- all four defaults are
+# GPL (see THIRD_PARTY_LICENSES.md). They are downloaded for you to run, not
+# bundled with the player. N64 and PS1 both need real hardware (OpenGL/GLES)
+# rendering support in the player, and PS1 additionally needs a BIOS image of
+# your own in retro/system/ next to your saves -- see README.md. PVM_CORES_DEST
+# overrides the destination folder.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,7 +37,7 @@ if [ "${1:-}" = "--android" ]; then
     DEST="${PVM_CORES_DEST:-$ROOT/thirdparty/cores-android/arm64-v8a}"
 fi
 CORES=("$@")
-[ ${#CORES[@]} -gt 0 ] || CORES=(gambatte bsnes)
+[ ${#CORES[@]} -gt 0 ] || CORES=(gambatte bsnes parallel_n64 swanstation)
 
 if [ "$ANDROID" = 1 ]; then
     PLATFORM="android"

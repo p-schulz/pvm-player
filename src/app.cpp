@@ -1,11 +1,21 @@
+// <cmath> first, before anything that might drag in the plain C <math.h> on
+// its own: on glibc/libstdc++ (desktop Linux), <cmath> only adds std::floor
+// etc. the first time it's processed, so if some other header already pulled
+// in a raw <math.h> beforehand, std::floor et al. never make it into `std`
+// (libc++ on macOS doesn't have this quirk, which is why this only shows up
+// building on Linux).
+#include <cmath>
+
 #include "app.h"
 
 #include "gl.h"
+#include "gl_state_guard.h"
 
 #include <imgui.h>
 #include <imgui_impl_opengl3.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cfloat>
 #include <cstdio>
 #include <cstdlib>
@@ -122,51 +132,6 @@ void checkGlError(const char* tag) {
         std::fprintf(stderr, "GL error after %s: 0x%x\n", tag, err);
     }
 }
-
-// Captures a handful of GL state bits mpv's render call may mutate, and
-// restores them afterward. mpv's render API makes no guarantee about
-// preserving caller GL state, and ImGui's backend renders right after this
-// in the same frame -- see PLAN.md Phase 2 "Known Risks".
-struct GLStateGuard {
-    GLboolean blendEnabled = GL_FALSE;
-    GLboolean depthEnabled = GL_FALSE;
-    GLboolean scissorEnabled = GL_FALSE;
-    GLint viewport[4] = {0, 0, 0, 0};
-    GLint program = 0;
-    GLint activeTexture = GL_TEXTURE0;
-    GLint texBinding2D = 0;
-    GLint vao = 0;
-    GLint arrayBuffer = 0;
-    GLint framebuffer = 0;
-
-    void capture() {
-        blendEnabled = glIsEnabled(GL_BLEND);
-        depthEnabled = glIsEnabled(GL_DEPTH_TEST);
-        scissorEnabled = glIsEnabled(GL_SCISSOR_TEST);
-        glGetIntegerv(GL_VIEWPORT, viewport);
-        glGetIntegerv(GL_CURRENT_PROGRAM, &program);
-        glGetIntegerv(GL_ACTIVE_TEXTURE, &activeTexture);
-        glActiveTexture(GL_TEXTURE0);
-        glGetIntegerv(GL_TEXTURE_BINDING_2D, &texBinding2D);
-        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao);
-        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &arrayBuffer);
-        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &framebuffer);
-    }
-
-    void restore() const {
-        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-        glUseProgram(program);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, texBinding2D);
-        glActiveTexture(static_cast<GLenum>(activeTexture));
-        glBindVertexArray(vao);
-        glBindBuffer(GL_ARRAY_BUFFER, arrayBuffer);
-        glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
-        (blendEnabled ? glEnable : glDisable)(GL_BLEND);
-        (depthEnabled ? glEnable : glDisable)(GL_DEPTH_TEST);
-        (scissorEnabled ? glEnable : glDisable)(GL_SCISSOR_TEST);
-    }
-};
 
 // ImGui has no built-in anisotropic (independent X/Y) scale for text or
 // windows -- io.FontGlobalScale and window scale are both single scalars.
@@ -338,6 +303,62 @@ const std::vector<std::string> kRetroAspectNames = {"CORE", "4:3", "PIXEL"};
 // scaled to the full width with the top and bottom cropped.
 const std::vector<std::string> kVideoFrameNames = {"Pillarbox", "Stretch", "Full width"};
 
+// Settings > Controls: every action offered for remapping, general controls
+// first and the RetroPad (games) actions at the end -- no section divider,
+// but the two groups read as distinct once labelled (see prettyActionName()).
+// Excludes ScrollUp/ScrollDown: those are analog-only (defaultAnalogBindings(),
+// gamepad_input.h), never bound through the KeyMap this menu edits.
+constexpr input::Action kControlMappingActions[] = {
+    input::Action::Up,          input::Action::Down,        input::Action::Left,
+    input::Action::Right,       input::Action::Confirm,     input::Action::Back,
+    input::Action::BackSoft,    input::Action::PageUp,      input::Action::PageDown,
+    input::Action::PlayPause,   input::Action::SeekBack,    input::Action::SeekFwd,
+    input::Action::VolumeDown,  input::Action::VolumeUp,    input::Action::ToggleOsd,
+    input::Action::MediaInfo,   input::Action::VideoScale,  input::Action::AspectRatio,
+    input::Action::ToggleCrt,   input::Action::OpenSettings, input::Action::NextSection,
+    input::Action::ToggleFavorite, input::Action::PlaySubsystem,
+    input::Action::FastextRed,  input::Action::FastextGreen, input::Action::FastextYellow,
+    input::Action::FastextBlue, input::Action::PageEntry,
+    input::Action::Digit0, input::Action::Digit1, input::Action::Digit2, input::Action::Digit3,
+    input::Action::Digit4, input::Action::Digit5, input::Action::Digit6, input::Action::Digit7,
+    input::Action::Digit8, input::Action::Digit9,
+    input::Action::RetroA,      input::Action::RetroB,      input::Action::RetroX,
+    input::Action::RetroY,      input::Action::RetroL,      input::Action::RetroR,
+    input::Action::RetroL2,     input::Action::RetroR2,     input::Action::RetroSelect,
+    input::Action::RetroStart,
+};
+
+// "toggle_favorite" -> "Toggle Favorite", "retro_a" -> "Retro A": readable
+// without a hand-maintained label table alongside the action list above.
+std::string prettyActionName(input::Action action) {
+    std::string name = input::actionName(action);
+    bool capitalizeNext = true;
+    for (char& c : name) {
+        if (c == '_') {
+            c = ' ';
+            capitalizeNext = true;
+        } else if (capitalizeNext) {
+            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            capitalizeNext = false;
+        }
+    }
+    return name;
+}
+
+std::string joinBindingNames(const std::vector<std::string>& names) {
+    if (names.empty()) {
+        return "(unbound)";
+    }
+    std::string joined;
+    for (size_t i = 0; i < names.size(); ++i) {
+        if (i > 0) {
+            joined += ", ";
+        }
+        joined += names[i];
+    }
+    return joined;
+}
+
 // Shortens a long path for display in a settings row (the stored value
 // itself is never truncated) so a deeply nested directory doesn't blow up
 // the auto-sized settings panel's width.
@@ -358,6 +379,10 @@ App::~App() {
 
 bool App::init(Platform& platform) {
     platform_ = &platform;
+    // A hardware-rendered libretro core loads its own GL functions through
+    // this -- glad's loader on desktop, EGL's on Android -- via
+    // Platform::glProcAddress(), the same one the app's own GL loading uses.
+    retro_.setProcAddressResolver([&platform](const char* name) { return platform.glProcAddress(name); });
 
     if (!mpv_.init(platform)) {
         std::fprintf(stderr, "Failed to initialize mpv player\n");
@@ -506,6 +531,7 @@ bool App::init(Platform& platform) {
     retroSmooth_ = loadedSettings.retroSmooth;
     retroLastDirectory_ = loadedSettings.retroLastDirectory;
     retroStartDirectory_ = loadedSettings.retroStartDirectory;
+    retroSavesDirectory_ = loadedSettings.retroSavesDirectory;
     retro_.setSmooth(retroSmooth_);
     if (platform.supportsWindowModes()) {
         const int monitorChoiceCount = static_cast<int>(monitorChoiceNames_.size());
@@ -566,7 +592,12 @@ bool App::init(Platform& platform) {
     retroCores_ = retro::scanCores(platform.coreDirs());
     for (const retro::CoreInfo& core : retroCores_) {
         std::fprintf(stdout, "Core: %s %s (%s)\n", core.name.c_str(), core.version.c_str(), core.path.c_str());
+        for (const retro::SubsystemInfo& subsystem : core.subsystems) {
+            std::fprintf(stdout, "  subsystem: %s (%s)\n", subsystem.desc.c_str(), subsystem.ident.c_str());
+        }
     }
+    anySubsystemCores_ =
+        std::any_of(retroCores_.begin(), retroCores_.end(), [](const retro::CoreInfo& c) { return !c.subsystems.empty(); });
     initTeletextSection(newsSection_, dataDir, assetDir, cacheDir, "news", "PVM_NEWS_CONFIG");
     initTeletextSection(tagesschauSection_, dataDir, assetDir, cacheDir, "tagesschau", "PVM_TAGESSCHAU_CONFIG");
     initMvwSection(ardSection_, dataDir, assetDir, cacheDir, "ard", "PVM_ARD_CONFIG");
@@ -695,6 +726,7 @@ void App::saveCurrentSettings() const {
     settings.retroSmooth = retroSmooth_;
     settings.retroLastDirectory = retroLastDirectory_;
     settings.retroStartDirectory = retroStartDirectory_;
+    settings.retroSavesDirectory = retroSavesDirectory_;
     saveSettings(configPath_, settings);
 }
 
@@ -726,6 +758,15 @@ void App::frame(const std::vector<input::InputEvent>& events) {
         }
     }
     dispatchEvents(events);
+
+    if (controlMappingWaiting_) {
+        if (const std::optional<CapturedInput> captured = platform_->takeCapturedInput()) {
+            finishControlRebind(*captured);
+        } else if (platform_->now() >= controlMappingWaitDeadline_) {
+            cancelControlRebind();
+        }
+    }
+
     mpv_.pollEvents();
 
     if (screen_ == Screen::Playing) {
@@ -830,6 +871,13 @@ void App::frame(const std::vector<input::InputEvent>& events) {
 }
 
 void App::injectSimulatedKey(const std::string& token) {
+    if (controlMappingWaiting_) {
+        // Consumed here regardless of success/failure -- an unnameable key
+        // (like a real press of one) just leaves capture waiting, same as
+        // any other simulated key that doesn't do anything on this screen.
+        platform_->simulateCapturedInput(token);
+        return;
+    }
     std::vector<input::InputEvent> events;
     if (!platform_->translateKeyName(token, events)) {
         const std::optional<input::Action> action = input::actionFromName(token);
@@ -1063,6 +1111,9 @@ void App::renderHud() {
         case Screen::Settings:
             renderSettings();
             break;
+        case Screen::ControlMapping:
+            renderControlMapping();
+            break;
         case Screen::News:
             renderTeletext();
             break;
@@ -1075,6 +1126,7 @@ void App::renderHud() {
         case Screen::PickStartDirectory:
         case Screen::GamesMenu:
         case Screen::GameFavorites:
+        case Screen::PickSubsystemContent:
             renderMenu();
             break;
     }
@@ -1501,11 +1553,17 @@ void App::renderMenu() {
             ImGui::Spacing();
         } else if (screen_ != Screen::RootMenu) {
             const bool picking = screen_ == Screen::PickStartDirectory;
+            const bool pickingSubsystem = screen_ == Screen::PickSubsystemContent;
             {
                 VertexScaleScope textScope(textScaleX_, textScaleY_);
                 char header[512];
-                std::snprintf(header, sizeof(header), "%s  (%s)", picking ? "SELECT FOLDER" : "SELECT FILE",
-                              fileBrowser_.currentPathLabel().c_str());
+                // A subsystem slot's own description ("Super Game Boy ROM")
+                // beats the generic "SELECT FILE" -- there's a specific file
+                // being asked for, not just any ROM.
+                const std::string what = pickingSubsystem ? "SELECT " + pendingSubsystemInfo_->roms[pendingSubsystemSlot_].desc
+                                         : picking          ? "SELECT FOLDER"
+                                                             : "SELECT FILE";
+                std::snprintf(header, sizeof(header), "%s  (%s)", what.c_str(), fileBrowser_.currentPathLabel().c_str());
                 drawOutlinedText(header);
             }
             ImGui::Spacing();
@@ -1550,12 +1608,16 @@ void App::renderMenu() {
         ImGui::Separator();
         {
             VertexScaleScope textScope(textScaleX_, textScaleY_);
+            // "P: Special" (subsystem play, e.g. Super Game Boy) only where
+            // it could possibly do anything: a core actually declares one.
+            const std::string special = anySubsystemCores_ ? "   P: Special" : "";
             const std::string footer =
                 screen_ == Screen::RootMenu   ? "UP/DOWN: Move   ENTER: Select   ESC: Exit"
                 : screen_ == Screen::TvMenu   ? "UP/DOWN: Move   ENTER: Watch   ESC: Back"
                 : screen_ == Screen::GamesMenu ? "UP/DOWN: Move   ENTER: Select   ESC: Back"
-                : screen_ == Screen::GameFavorites ? "ENTER: Play   F: Remove Favorite   ESC: Back"
-                : browsingGames_ ? "ENTER: Open   F: Toggle Favorite   ESC: Back"
+                : screen_ == Screen::GameFavorites ? "ENTER: Play   F: Remove Favorite" + special + "   ESC: Back"
+                : screen_ == Screen::PickSubsystemContent ? "ENTER: Open   ESC: Cancel"
+                : browsingGames_ ? "ENTER: Open   F: Toggle Favorite" + special + "   ESC: Back"
                                   : "UP/DOWN: Move   ENTER: Open   ESC: Back";
             drawOutlinedTextDisabled(footer);
         }
@@ -1625,6 +1687,79 @@ void App::drawScrollableRows(int count, int selectedIndex, const std::function<s
         ImGui::PopClipRect();
     }
     ImGui::EndChild();
+}
+
+void App::beginControlRebind(input::Action action) {
+    controlMappingPendingAction_ = action;
+    controlMappingWaiting_ = true;
+    controlMappingWaitDeadline_ = platform_->now() + 6.0;
+    platform_->beginInputCapture();
+}
+
+void App::finishControlRebind(const CapturedInput& captured) {
+    platform_->rebindAction(controlMappingPendingAction_, captured.code, captured.name);
+    showToast(prettyActionName(controlMappingPendingAction_) + ": " + captured.name);
+    controlMappingWaiting_ = false;
+}
+
+void App::cancelControlRebind() {
+    platform_->cancelInputCapture();
+    controlMappingWaiting_ = false;
+}
+
+void App::renderControlMapping() {
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove |
+                                    ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoBringToFrontOnFocus;
+
+    positionMenuWindow();
+    const ImVec2 anchor = menuPivotAnchor();
+    ImGui::Begin("PVM Controls", nullptr, flags);
+    ImGui::PushClipRect(ImVec2(0.0f, 0.0f), ImGui::GetIO().DisplaySize, false);
+
+    {
+        VertexScaleScope menuScope(menuScaleX_, menuScaleY_, anchor);
+        {
+            VertexScaleScope textScope(textScaleX_, textScaleY_);
+            drawOutlinedText("CONTROLS");
+        }
+        ImGui::Separator();
+        ImGui::Spacing();
+    }
+
+    constexpr int kCount = static_cast<int>(std::size(kControlMappingActions));
+    drawScrollableRows(
+        kCount, controlMappingRow_,
+        [&](int i) {
+            const input::Action action = kControlMappingActions[static_cast<size_t>(i)];
+            const bool isPending = controlMappingWaiting_ && action == controlMappingPendingAction_;
+            if (isPending) {
+                const int secondsLeft =
+                    std::max(0, static_cast<int>(std::ceil(controlMappingWaitDeadline_ - platform_->now())));
+                return prettyActionName(action) + ": PRESS A BUTTON... (" + std::to_string(secondsLeft) + "s)";
+            }
+            return prettyActionName(action) + ": " + joinBindingNames(platform_->bindingNames(action));
+        },
+        anchor, computeListHeightBudget());
+
+    {
+        VertexScaleScope menuScope(menuScaleX_, menuScaleY_, anchor);
+        ImGui::Spacing();
+        ImGui::Separator();
+        {
+            VertexScaleScope textScope(textScaleX_, textScaleY_);
+            drawOutlinedTextDisabled(controlMappingWaiting_
+                                         ? "Press the key or button you want -- any press binds it"
+                                         : "UP/DOWN: Move   ENTER: Rebind   LEFT/RIGHT: Reset   ESC: Back");
+        }
+    }
+
+    ImGui::PopClipRect();
+    ImGui::End();
+
+    renderToast();
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
 void App::renderSettings() {
@@ -1703,6 +1838,15 @@ std::vector<App::SettingsRowDesc> App::buildSettingsRows() {
     };
 
     std::vector<SettingsRowDesc> rows;
+
+    SettingsRowDesc controlsRow;
+    controlsRow.type = SettingsRowType::Action;
+    controlsRow.label = "Controls";
+    controlsRow.onActivate = [this]() {
+        controlMappingRow_ = 0;
+        screen_ = Screen::ControlMapping;
+    };
+    rows.push_back(controlsRow);
 
     // Window modes are a desktop concept; on a platform with one fixed
     // display these rows would do nothing, so they aren't offered.
@@ -1811,7 +1955,7 @@ std::vector<App::SettingsRowDesc> App::buildSettingsRows() {
         const std::string startAt =
             !startDirectory_.empty() ? startDirectory_ : (!mediaRoots_.empty() ? mediaRoots_[0] : ".");
         fileBrowser_.openPicker(startAt, showHiddenFiles_);
-        pickingGameDirectory_ = false;
+        directoryPickTarget_ = DirectoryPickTarget::MediaStart;
         screen_ = Screen::PickStartDirectory;
     };
     rows.push_back(startDirRow);
@@ -1826,10 +1970,34 @@ std::vector<App::SettingsRowDesc> App::buildSettingsRows() {
     gameDirRow.actionValue = truncatePathForDisplay(gameStart);
     gameDirRow.onActivate = [this, gameStart]() {
         fileBrowser_.openPicker(gameStart, showHiddenFiles_);
-        pickingGameDirectory_ = true;
+        directoryPickTarget_ = DirectoryPickTarget::RomStart;
         screen_ = Screen::PickStartDirectory;
     };
     rows.push_back(gameDirRow);
+
+    SettingsRowDesc savesDirRow;
+    savesDirRow.type = SettingsRowType::Action;
+    savesDirRow.label = "Save Directory";
+    savesDirRow.actionValue = truncatePathForDisplay(retroSavesDir());
+    savesDirRow.onActivate = [this]() {
+        fileBrowser_.openPicker(retroSavesDir(), showHiddenFiles_);
+        directoryPickTarget_ = DirectoryPickTarget::SavesDirectory;
+        screen_ = Screen::PickStartDirectory;
+    };
+    rows.push_back(savesDirRow);
+
+    if (!retroSavesDirectory_.empty()) {
+        SettingsRowDesc resetSavesDirRow;
+        resetSavesDirRow.type = SettingsRowType::Action;
+        resetSavesDirRow.label = "Reset Save Directory";
+        resetSavesDirRow.actionValue = "to default";
+        resetSavesDirRow.onActivate = [this]() {
+            retroSavesDirectory_.clear();
+            saveCurrentSettings();
+            showToast("SAVE DIRECTORY: " + retroSavesDir());
+        };
+        rows.push_back(resetSavesDirRow);
+    }
 
     rows.push_back(floatRow("Brightness", &brightness_, -0.5f, 0.5f, 0.05f));
     rows.push_back(floatRow("Contrast", &contrast_, 0.0f, 2.0f, 0.05f));
@@ -2168,6 +2336,10 @@ void App::saveGameFavorites() const {
     }
 }
 
+std::string App::retroSavesDir() const {
+    return retroSavesDirectory_.empty() ? platform_->dataDir() + "/retro/saves" : retroSavesDirectory_;
+}
+
 void App::enterFileBrowser(std::vector<std::string> extensions, bool games) {
     browsingGames_ = games;
     // The configurable start/last-used directory applies to the platform's
@@ -2188,6 +2360,60 @@ void App::enterFileBrowser(std::vector<std::string> extensions, bool games) {
     }
     fileBrowser_.open(roots, std::move(extensions), showHiddenFiles_);
     screen_ = Screen::FileBrowser;
+}
+
+void App::beginSubsystemPlay(const retro::SubsystemMatch& match, const std::string& primaryPath) {
+    if (!match.core || !match.subsystem || match.subsystem->roms.empty()) {
+        return;
+    }
+    pendingSubsystemCore_ = match.core;
+    pendingSubsystemInfo_ = match.subsystem;
+    pendingSubsystemPaths_ = {primaryPath};
+    pendingSubsystemSlot_ = 1;
+    if (pendingSubsystemSlot_ >= pendingSubsystemInfo_->roms.size()) {
+        launchPendingSubsystem();  // a (hypothetical) single-slot subsystem: nothing more to ask for
+        return;
+    }
+    promptNextSubsystemContent();
+}
+
+void App::promptNextSubsystemContent() {
+    const retro::SubsystemRomSlot& slot = pendingSubsystemInfo_->roms[pendingSubsystemSlot_];
+    showToast(pendingSubsystemInfo_->desc + ": SELECT " + slot.desc);
+    // The same start-directory convention as Browse ROMs; the BIOS/companion
+    // file is as likely to live wherever ROMs do as anywhere else, and this
+    // is at least a real starting point rather than the filesystem root.
+    std::vector<std::string> roots = mediaRoots_;
+    if (!mediaRootsExplicit_ || mediaRoots_.size() <= 1) {
+        const std::string& start = !retroStartDirectory_.empty() ? retroStartDirectory_ : startDirectory_;
+        if (!start.empty()) {
+            roots = {start};
+        }
+    }
+    fileBrowser_.open(roots, slot.extensions, showHiddenFiles_);
+    screen_ = Screen::PickSubsystemContent;
+}
+
+void App::launchPendingSubsystem() {
+    std::string error;
+    if (!retro_.openSubsystem(*pendingSubsystemCore_, *pendingSubsystemInfo_, pendingSubsystemPaths_,
+                              platform_->dataDir(), retroSavesDir(), error)) {
+        showToast("CANNOT START GAME: " + error);
+    } else {
+        retro_.setSmooth(retroSmooth_);
+        gameMenuVisible_ = false;
+        gameMenuRow_ = 0;
+        retroStartDown_ = retroSelectDown_ = false;
+        screen_ = Screen::Game;
+    }
+    cancelPendingSubsystem();
+}
+
+void App::cancelPendingSubsystem() {
+    pendingSubsystemCore_ = nullptr;
+    pendingSubsystemInfo_ = nullptr;
+    pendingSubsystemPaths_.clear();
+    pendingSubsystemSlot_ = 0;
 }
 
 void App::handleInput(const input::InputEvent& event) {
@@ -2334,6 +2560,17 @@ void App::handleInput(const input::InputEvent& event) {
                         toggleGameFavorite(gameFavorites_[static_cast<size_t>(gameFavoritesMenu_.selectedIndex())]);
                     }
                     break;
+                case Action::PlaySubsystem:
+                    if (pressed && !gameFavorites_.empty()) {
+                        const std::string& path = gameFavorites_[static_cast<size_t>(gameFavoritesMenu_.selectedIndex())];
+                        const retro::SubsystemMatch match = retro::pickSubsystem(retroCores_, path);
+                        if (match.core) {
+                            beginSubsystemPlay(match, path);
+                        } else {
+                            showToast("NO SUBSYSTEM FOR THIS FILE");
+                        }
+                    }
+                    break;
                 case Action::OpenSettings:
                     if (pressed) {
                         settingsSelectedRow_ = 0;
@@ -2343,6 +2580,51 @@ void App::handleInput(const input::InputEvent& event) {
                 case Action::Back:
                 case Action::BackSoft:
                     if (pressed) {
+                        screen_ = Screen::GamesMenu;
+                    }
+                    break;
+                default:
+                    break;
+            }
+            break;
+
+        case Screen::PickSubsystemContent:
+            switch (action) {
+                case Action::Up:
+                    fileBrowser_.moveUp();
+                    break;
+                case Action::Down:
+                    fileBrowser_.moveDown();
+                    break;
+                case Action::PageUp:
+                    fileBrowser_.moveBy(-kListPageSize);
+                    break;
+                case Action::PageDown:
+                    fileBrowser_.moveBy(kListPageSize);
+                    break;
+                case Action::Confirm:
+                    if (pressed && !fileBrowser_.empty()) {
+                        if (fileBrowser_.selectedIsDirectory()) {
+                            fileBrowser_.enterSelectedDirectory();
+                        } else {
+                            const std::string path = fileBrowser_.selectedFilePath();
+                            if (!path.empty()) {
+                                pendingSubsystemPaths_.push_back(path);
+                                ++pendingSubsystemSlot_;
+                                if (pendingSubsystemSlot_ < pendingSubsystemInfo_->roms.size()) {
+                                    promptNextSubsystemContent();
+                                } else {
+                                    launchPendingSubsystem();
+                                }
+                            }
+                        }
+                    }
+                    break;
+                case Action::Back:
+                case Action::BackSoft:
+                    if (pressed && !fileBrowser_.goBack()) {
+                        cancelPendingSubsystem();
+                        showToast("CANCELLED");
                         screen_ = Screen::GamesMenu;
                     }
                     break;
@@ -2376,6 +2658,18 @@ void App::handleInput(const input::InputEvent& event) {
                         const std::string path = fileBrowser_.selectedFilePath();
                         if (!path.empty()) {
                             toggleGameFavorite(path);
+                        }
+                    }
+                    break;
+                case Action::PlaySubsystem:
+                    if (pressed && browsingGames_ && !fileBrowser_.empty() && !fileBrowser_.selectedIsDirectory()) {
+                        const std::string path = fileBrowser_.selectedFilePath();
+                        const retro::SubsystemMatch match = path.empty() ? retro::SubsystemMatch{}
+                                                                          : retro::pickSubsystem(retroCores_, path);
+                        if (match.core) {
+                            beginSubsystemPlay(match, path);
+                        } else {
+                            showToast("NO SUBSYSTEM FOR THIS FILE");
                         }
                     }
                     break;
@@ -2454,6 +2748,50 @@ void App::handleInput(const input::InputEvent& event) {
             break;
         }
 
+        case Screen::ControlMapping: {
+            // While waiting for a press, the platform intercepts every key/
+            // button itself (see Platform::beginInputCapture()) -- none of
+            // it reaches here as a normal action, so this case only ever
+            // runs between captures.
+            constexpr int rowCount = static_cast<int>(std::size(kControlMappingActions));
+            switch (action) {
+                case Action::Up:
+                    controlMappingRow_ = std::max(0, controlMappingRow_ - 1);
+                    break;
+                case Action::Down:
+                    controlMappingRow_ = std::min(rowCount - 1, controlMappingRow_ + 1);
+                    break;
+                case Action::PageUp:
+                    controlMappingRow_ = std::max(0, controlMappingRow_ - kListPageSize);
+                    break;
+                case Action::PageDown:
+                    controlMappingRow_ = std::min(rowCount - 1, controlMappingRow_ + kListPageSize);
+                    break;
+                case Action::Confirm:
+                    if (pressed) {
+                        beginControlRebind(kControlMappingActions[static_cast<size_t>(controlMappingRow_)]);
+                    }
+                    break;
+                case Action::Left:
+                case Action::Right:
+                    if (pressed) {
+                        platform_->resetActionBinding(kControlMappingActions[static_cast<size_t>(controlMappingRow_)]);
+                        showToast(prettyActionName(kControlMappingActions[static_cast<size_t>(controlMappingRow_)]) +
+                                  ": RESET TO DEFAULT");
+                    }
+                    break;
+                case Action::Back:
+                case Action::BackSoft:
+                    if (pressed) {
+                        screen_ = Screen::Settings;
+                    }
+                    break;
+                default:
+                    break;
+            }
+            break;
+        }
+
         case Screen::PickStartDirectory:
             switch (action) {
                 case Action::Up:
@@ -2471,12 +2809,18 @@ void App::handleInput(const input::InputEvent& event) {
                 case Action::Confirm:
                     if (pressed && !fileBrowser_.empty()) {
                         if (fileBrowser_.selectedIsPickHere()) {
-                            if (pickingGameDirectory_) {
-                                retroStartDirectory_ = fileBrowser_.currentPathLabel();
-                                retroLastDirectory_.clear();
-                            } else {
-                                startDirectory_ = fileBrowser_.currentPathLabel();
-                                lastUsedDirectory_.clear();  // an explicit new start dir takes priority
+                            switch (directoryPickTarget_) {
+                                case DirectoryPickTarget::RomStart:
+                                    retroStartDirectory_ = fileBrowser_.currentPathLabel();
+                                    retroLastDirectory_.clear();
+                                    break;
+                                case DirectoryPickTarget::SavesDirectory:
+                                    retroSavesDirectory_ = fileBrowser_.currentPathLabel();
+                                    break;
+                                case DirectoryPickTarget::MediaStart:
+                                    startDirectory_ = fileBrowser_.currentPathLabel();
+                                    lastUsedDirectory_.clear();  // an explicit new start dir takes priority
+                                    break;
                             }
                             saveCurrentSettings();
                             screen_ = Screen::Settings;
@@ -2844,6 +3188,11 @@ App::PlaybackSnapshot App::snapshotPlayback() {
         snapshot.valid = true;
         snapshot.game = true;
         snapshot.path = retro_.romPath();
+        if (retro_.isSubsystem()) {
+            snapshot.subsystemGameType = retro_.subsystemGameType();
+            snapshot.subsystemCoreName = retro_.coreName();
+            snapshot.subsystemContentPaths = retro_.subsystemContentPaths();
+        }
         retro_.saveState(retro::Session::kRecoverySlot);
         return snapshot;
     }
@@ -2862,6 +3211,18 @@ App::PlaybackSnapshot App::snapshotPlayback() {
 
 void App::restorePlayback(const PlaybackSnapshot& snapshot) {
     if (snapshot.valid && snapshot.game) {
+        if (snapshot.subsystemGameType != 0) {
+            const retro::SubsystemMatch match =
+                retro::findSubsystem(retroCores_, snapshot.subsystemCoreName, snapshot.subsystemGameType);
+            std::string error;
+            if (match.core && retro_.openSubsystem(*match.core, *match.subsystem, snapshot.subsystemContentPaths,
+                                                    platform_->dataDir(), retroSavesDir(), error)) {
+                retro_.setSmooth(retroSmooth_);
+                screen_ = Screen::Game;
+                retro_.loadState(retro::Session::kRecoverySlot);
+            }
+            return;
+        }
         startGame(snapshot.path);
         if (retro_.active()) {
             retro_.loadState(retro::Session::kRecoverySlot);
@@ -3062,7 +3423,7 @@ void App::startGame(const std::string& romPath) {
     // Remember the folder now: the browser is left for the game screen.
     const std::string dir = fileBrowser_.currentPathLabel();
     std::string error;
-    if (!retro_.open(*core, romPath, platform_->dataDir(), error)) {
+    if (!retro_.open(*core, romPath, platform_->dataDir(), retroSavesDir(), error)) {
         std::fprintf(stderr, "[retro] %s: %s\n", core->name.c_str(), error.c_str());
         showToast("CANNOT START GAME: " + error);
         return;
@@ -3248,11 +3609,11 @@ void App::handleGameInput(const input::InputEvent& event) {
 }
 
 void App::renderGameFrame(int width, int height) {
-    if (retro_.texture() == 0 || width <= 0 || height <= 0) {
-        return;
-    }
     const int texW = retro_.textureWidth();
     const int texH = retro_.textureHeight();
+    if (retro_.texture() == 0 || width <= 0 || height <= 0 || texW <= 0 || texH <= 0) {
+        return;  // a hardware-rendered core's FBO texture exists before its first real frame does
+    }
     float aspect = retro_.aspect();
     if (retroAspectIndex_ == 1) {
         aspect = 4.0f / 3.0f;
@@ -3289,9 +3650,20 @@ void App::renderGameFrame(int width, int height) {
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, retro_.texture());
     glUniform1i(glGetUniformLocation(blitProgram_, "uTexture"), 0);
-    // Rows arrive top first; GL's first row is the bottom.
-    glUniform2f(glGetUniformLocation(blitProgram_, "uUvScale"), 1.0f, -1.0f);
-    glUniform2f(glGetUniformLocation(blitProgram_, "uUvOffset"), 0.0f, 1.0f);
+    // A hardware-rendered core's texture is allocated at its declared
+    // maximum size but usually only partly filled (the used region sits at
+    // the texture's own origin), so the sample rect is cropped to the
+    // fraction actually in use -- 1.0 for a software core, which uploads a
+    // tightly-sized texture every frame. Rows arrive top-first for a
+    // software core (needsFlipY() true) and, for a hardware-rendered one,
+    // whenever it didn't ask for the normal bottom-left GL convention.
+    const float usedFracX =
+        static_cast<float>(retro_.textureWidth()) / static_cast<float>(retro_.textureStorageWidth());
+    const float usedFracY =
+        static_cast<float>(retro_.textureHeight()) / static_cast<float>(retro_.textureStorageHeight());
+    const bool flipY = retro_.needsFlipY();
+    glUniform2f(glGetUniformLocation(blitProgram_, "uUvScale"), usedFracX, flipY ? -usedFracY : usedFracY);
+    glUniform2f(glGetUniformLocation(blitProgram_, "uUvOffset"), 0.0f, flipY ? usedFracY : 0.0f);
     glBindVertexArray(blitVao_);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
@@ -3319,7 +3691,8 @@ void App::renderGameMenu() {
     {
         VertexScaleScope textScope(textScaleX_, textScaleY_);
         drawOutlinedText(retro_.gameName());
-        drawOutlinedTextDisabled(retro_.coreName());
+        drawOutlinedTextDisabled(retro_.isSubsystem() ? retro_.coreName() + " (" + retro_.subsystemDesc() + ")"
+                                                       : retro_.coreName());
     }
     ImGui::Separator();
     const std::vector<SettingsRowDesc> rows = buildGameMenuRows();

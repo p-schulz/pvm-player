@@ -12,6 +12,7 @@
 #include <ctime>
 #include <fstream>
 
+#include "input/keymap_persist.h"
 #include "platform/android/keymap_android.h"
 
 namespace {
@@ -169,11 +170,47 @@ void AndroidPlatform::destroyContext() {
 }
 
 void AndroidPlatform::queueKeyEvent(int keyCode, int action) {
+    if (capturing_) {
+        // Swallowed either way: an unnameable key (no keys.cfg spelling for
+        // it) just keeps capture waiting rather than reaching pad_ at all --
+        // it must not also navigate/act while the Controls menu asked for it.
+        if (action == AKEY_EVENT_ACTION_DOWN) {
+            if (const std::optional<std::string> name = input::android::nameFromCode(keyCode)) {
+                capturedInput_ = CapturedInput{keyCode, *name};
+                capturing_ = false;
+            }
+        }
+        return;
+    }
     if (action == AKEY_EVENT_ACTION_DOWN) {
         pad_.keyDown(keyCode, now());  // the OS's own repeats are ignored inside
     } else if (action == AKEY_EVENT_ACTION_UP) {
         pad_.keyUp(keyCode, now());
     }
+}
+
+std::vector<std::string> AndroidPlatform::bindingNames(input::Action action) const {
+    std::vector<std::string> names;
+    for (int code : pad_.keyMap().codesFor(action)) {
+        if (const std::optional<std::string> name = input::android::nameFromCode(code)) {
+            names.push_back(*name);
+        }
+    }
+    return names;
+}
+
+void AndroidPlatform::rebindAction(input::Action action, int code, const std::string& name) {
+    pad_.keyMap().unbindAction(action);
+    pad_.keyMap().bind(code, action);
+    input::saveKeyBinding(dataDir_ + "/keys.cfg", action, {name});
+}
+
+void AndroidPlatform::resetActionBinding(input::Action action) {
+    pad_.keyMap().unbindAction(action);
+    for (int code : input::android::defaultKeyMap().codesFor(action)) {
+        pad_.keyMap().bind(code, action);
+    }
+    input::clearKeyBindingOverride(dataDir_ + "/keys.cfg", action);
 }
 
 void AndroidPlatform::queueAxis(input::PadAxis axis, float value) {

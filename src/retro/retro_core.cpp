@@ -155,6 +155,7 @@ struct Core::Api {
     bool (*serialize)(void*, size_t) = nullptr;
     bool (*unserialize)(const void*, size_t) = nullptr;
     bool (*load_game)(const retro_game_info*) = nullptr;
+    bool (*load_game_special)(unsigned, const retro_game_info*, size_t) = nullptr;
     void (*unload_game)() = nullptr;
     void* (*get_memory_data)(unsigned) = nullptr;
     size_t (*get_memory_size)(unsigned) = nullptr;
@@ -187,6 +188,7 @@ const char* resolveApi(void* library, Core::Api& api) {
         {"retro_serialize", reinterpret_cast<void**>(&api.serialize)},
         {"retro_unserialize", reinterpret_cast<void**>(&api.unserialize)},
         {"retro_load_game", reinterpret_cast<void**>(&api.load_game)},
+        {"retro_load_game_special", reinterpret_cast<void**>(&api.load_game_special)},
         {"retro_unload_game", reinterpret_cast<void**>(&api.unload_game)},
         {"retro_get_memory_data", reinterpret_cast<void**>(&api.get_memory_data)},
         {"retro_get_memory_size", reinterpret_cast<void**>(&api.get_memory_size)},
@@ -218,6 +220,63 @@ void fillInfo(const retro_system_info& raw, CoreInfo& info) {
 
 }  // namespace
 
+namespace {
+
+// Set only for the duration of probeCore()'s retro_set_environment() call
+// below, so its answer for RETRO_ENVIRONMENT_SET_SUBSYSTEM_INFO has somewhere
+// to write -- entirely separate from the real session's g_active (a core is
+// never both probed and running at once; probing never calls retro_init()).
+std::vector<SubsystemInfo>* g_probeSubsystems = nullptr;
+
+std::vector<std::string> splitExtensions(const char* pipeSeparated) {
+    std::vector<std::string> out;
+    if (!pipeSeparated) {
+        return out;
+    }
+    std::stringstream list(pipeSeparated);
+    std::string ext;
+    while (std::getline(list, ext, '|')) {
+        if (!ext.empty()) {
+            out.push_back("." + lowered(ext));
+        }
+    }
+    return out;
+}
+
+// Answers just enough of the environment API for a core's retro_set_
+// environment() to hand us RETRO_ENVIRONMENT_SET_SUBSYSTEM_INFO (the only
+// thing probeCore() wants); everything else politely declines, since no
+// core is required to tolerate an environment callback that supports
+// nothing -- "not supported" (false) is always a safe answer here.
+bool probeEnvironment(unsigned cmd, void* data) {
+    cmd &= ~(RETRO_ENVIRONMENT_EXPERIMENTAL | RETRO_ENVIRONMENT_PRIVATE);
+    if (cmd != RETRO_ENVIRONMENT_SET_SUBSYSTEM_INFO || !g_probeSubsystems) {
+        return false;
+    }
+    for (const auto* sub = static_cast<const retro_subsystem_info*>(data); sub && sub->desc; ++sub) {
+        SubsystemInfo info;
+        info.desc = sub->desc;
+        info.ident = sub->ident ? sub->ident : "";
+        info.gameType = sub->id;
+        for (unsigned i = 0; i < sub->num_roms; ++i) {
+            const retro_subsystem_rom_info& rom = sub->roms[i];
+            SubsystemRomSlot slot;
+            slot.desc = rom.desc ? rom.desc : "";
+            slot.extensions = splitExtensions(rom.valid_extensions);
+            slot.needFullpath = rom.need_fullpath;
+            slot.required = rom.required;
+            for (unsigned m = 0; m < rom.num_memory; ++m) {
+                slot.memory.push_back({rom.memory[m].extension ? rom.memory[m].extension : "", rom.memory[m].type});
+            }
+            info.roms.push_back(std::move(slot));
+        }
+        g_probeSubsystems->push_back(std::move(info));
+    }
+    return true;
+}
+
+}  // namespace
+
 bool probeCore(const std::string& path, CoreInfo& info) {
     void* library = openLibrary(path);
     if (!library) {
@@ -225,8 +284,10 @@ bool probeCore(const std::string& path, CoreInfo& info) {
     }
     using GetSystemInfo = void (*)(retro_system_info*);
     using ApiVersion = unsigned (*)();
+    using SetEnvironment = void (*)(retro_environment_t);
     auto getInfo = reinterpret_cast<GetSystemInfo>(findSymbol(library, "retro_get_system_info"));
     auto version = reinterpret_cast<ApiVersion>(findSymbol(library, "retro_api_version"));
+    auto setEnvironment = reinterpret_cast<SetEnvironment>(findSymbol(library, "retro_set_environment"));
     bool ok = false;
     if (getInfo && version && version() == RETRO_API_VERSION) {
         retro_system_info raw{};
@@ -234,6 +295,11 @@ bool probeCore(const std::string& path, CoreInfo& info) {
         info = CoreInfo{};
         info.path = path;
         fillInfo(raw, info);
+        if (setEnvironment) {
+            g_probeSubsystems = &info.subsystems;
+            setEnvironment(&probeEnvironment);
+            g_probeSubsystems = nullptr;
+        }
         ok = true;
     }
     closeLibrary(library);
@@ -282,6 +348,38 @@ const CoreInfo* pickCore(const std::vector<CoreInfo>& cores, const std::string& 
         }
     }
     return best;
+}
+
+SubsystemMatch pickSubsystem(const std::vector<CoreInfo>& cores, const std::string& romPath) {
+    const std::string ext = extensionOf(romPath);
+    for (const CoreInfo& core : cores) {
+        for (const SubsystemInfo& subsystem : core.subsystems) {
+            // The first rom slot is the "main" content -- the one the file
+            // browser's selection stands for (e.g. the Game Boy ROM in
+            // bsnes's Super Game Boy subsystem; the rest, like the SGB BIOS,
+            // are asked for afterwards).
+            if (!subsystem.roms.empty() &&
+                std::find(subsystem.roms.front().extensions.begin(), subsystem.roms.front().extensions.end(), ext) !=
+                    subsystem.roms.front().extensions.end()) {
+                return SubsystemMatch{&core, &subsystem};
+            }
+        }
+    }
+    return SubsystemMatch{};
+}
+
+SubsystemMatch findSubsystem(const std::vector<CoreInfo>& cores, const std::string& coreName, unsigned gameType) {
+    for (const CoreInfo& core : cores) {
+        if (core.name != coreName) {
+            continue;
+        }
+        for (const SubsystemInfo& subsystem : core.subsystems) {
+            if (subsystem.gameType == gameType) {
+                return SubsystemMatch{&core, &subsystem};
+            }
+        }
+    }
+    return SubsystemMatch{};
 }
 
 std::vector<std::string> allExtensions(const std::vector<CoreInfo>& cores) {
@@ -432,16 +530,74 @@ struct Bridge {
             case RETRO_ENVIRONMENT_GET_INPUT_MAX_USERS:
                 *static_cast<unsigned*>(data) = 1;
                 return true;
+            case RETRO_ENVIRONMENT_SET_HW_RENDER: {
+                auto* hw = static_cast<retro_hw_render_callback*>(data);
+                switch (hw->context_type) {
+                    case RETRO_HW_CONTEXT_OPENGL:
+                        core->hwRender_.type = HwContextType::OpenGL;
+                        break;
+                    case RETRO_HW_CONTEXT_OPENGL_CORE:
+                        core->hwRender_.type = HwContextType::OpenGLCore;
+                        break;
+                    case RETRO_HW_CONTEXT_OPENGLES2:
+                        core->hwRender_.type = HwContextType::OpenGLES2;
+                        break;
+                    case RETRO_HW_CONTEXT_OPENGLES3:
+                        core->hwRender_.type = HwContextType::OpenGLES3;
+                        break;
+                    case RETRO_HW_CONTEXT_OPENGLES_VERSION:
+                        // We hand out whatever context our own loader already set up
+                        // (GL 3.3 core on desktop, GLES 3 on Android) regardless of the
+                        // requested version -- there is no path to negotiate a newer
+                        // one, so treat this the same as a plain GLES3 request.
+                        core->hwRender_.type = HwContextType::OpenGLES3;
+                        break;
+                    default:
+                        return false;  // Vulkan/D3D/etc: not something we can provide
+                }
+                core->hwRender_.versionMajor = hw->version_major;
+                core->hwRender_.versionMinor = hw->version_minor;
+                core->hwRender_.depth = hw->depth;
+                core->hwRender_.stencil = hw->stencil;
+                core->hwRender_.bottomLeftOrigin = hw->bottom_left_origin;
+                core->hwContextResetFn_ = hw->context_reset;
+                core->hwContextDestroyFn_ = hw->context_destroy;
+                hw->get_current_framebuffer = &Bridge::hwGetCurrentFramebuffer;
+                hw->get_proc_address = &Bridge::hwGetProcAddress;
+                return true;
+            }
+            case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER:
+#if defined(__ANDROID__)
+                *static_cast<unsigned*>(data) = RETRO_HW_CONTEXT_OPENGLES3;
+#else
+                *static_cast<unsigned*>(data) = RETRO_HW_CONTEXT_OPENGL_CORE;
+#endif
+                return true;
             default:
-                // Hardware rendering, VFS, rumble, disk control, core options
-                // v1/v2, ... : not supported; cores fall back or say so.
+                // VFS, rumble, disk control, core options v1/v2, Vulkan/D3D
+                // negotiation, ... : not supported; cores fall back or say so.
                 return false;
         }
     }
 
     static void video(const void* data, unsigned width, unsigned height, size_t pitch) {
         Core* core = g_active;
-        if (!core || !data || width == 0 || height == 0) {
+        if (!core || width == 0 || height == 0) {
+            return;  // a duplicated frame: the previous picture stands
+        }
+        if (data == RETRO_HW_FRAME_BUFFER_VALID) {
+            // Hardware-rendered: the core has already drawn into the FBO
+            // hwFramebuffer_ names, directly -- there is no CPU pixel buffer
+            // to convert, only the new size (it may change frame to frame,
+            // up to maxWidth()/maxHeight()). Session::uploadFrame() sees this
+            // as a no-op besides tracking that; App reads the FBO's own
+            // texture (see Session::texture()) instead of frame().rgba.
+            core->frame_.width = static_cast<int>(width);
+            core->frame_.height = static_cast<int>(height);
+            ++core->frame_.serial;
+            return;
+        }
+        if (!data) {
             return;  // a duplicated frame: the previous picture stands
         }
         Frame& frame = core->frame_;
@@ -512,6 +668,18 @@ struct Bridge {
             return static_cast<int16_t>(core->buttons_ & 0xFFFF);
         }
         return id < kPadButtonCount ? static_cast<int16_t>((core->buttons_ >> id) & 1u) : 0;
+    }
+
+    // The two callbacks RETRO_ENVIRONMENT_SET_HW_RENDER hands to the core
+    // (hw->get_current_framebuffer/get_proc_address, above); both plain C
+    // function pointers with no room for a context argument, hence g_active.
+    static uintptr_t hwGetCurrentFramebuffer() { return g_active ? g_active->hwFramebuffer_ : 0; }
+
+    static retro_proc_address_t hwGetProcAddress(const char* sym) {
+        if (!g_active || !g_active->getProcAddress_) {
+            return nullptr;
+        }
+        return reinterpret_cast<retro_proc_address_t>(g_active->getProcAddress_(sym));
     }
 };
 
@@ -588,6 +756,36 @@ bool Core::load(const CoreInfo& info, const std::string& systemDir, const std::s
     return true;
 }
 
+// Shared tail of loadGame()/loadGameSpecial(): once the core has accepted the
+// content, read back its actual timing/geometry and connect a pad.
+void Core::finishLoad() {
+    gameLoaded_ = true;
+    retro_system_av_info av{};
+    api_->get_system_av_info(&av);
+    fps_ = av.timing.fps > 0.0 ? av.timing.fps : 60.0;
+    sampleRate_ = av.timing.sample_rate > 0.0 ? av.timing.sample_rate : 44100.0;
+    baseWidth_ = av.geometry.base_width;
+    baseHeight_ = av.geometry.base_height;
+    geometryAspect_ = av.geometry.aspect_ratio;
+    // For a hardware-rendered core this is the FBO size the caller needs to
+    // allocate: base_width/height may grow up to this without notice.
+    maxWidth_ = av.geometry.max_width > 0 ? av.geometry.max_width : baseWidth_;
+    maxHeight_ = av.geometry.max_height > 0 ? av.geometry.max_height : baseHeight_;
+    api_->set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
+}
+
+void Core::hwContextReset() {
+    if (hwContextResetFn_) {
+        hwContextResetFn_();
+    }
+}
+
+void Core::hwContextDestroy() {
+    if (hwContextDestroyFn_) {
+        hwContextDestroyFn_();
+    }
+}
+
 bool Core::loadGame(const std::string& romPath, std::string& error) {
     if (!initialised_) {
         error = "core not loaded";
@@ -608,16 +806,64 @@ bool Core::loadGame(const std::string& romPath, std::string& error) {
         error = "the core did not accept this game";
         return false;
     }
-    gameLoaded_ = true;
+    saveMemoryId_ = RETRO_MEMORY_SAVE_RAM;
+    finishLoad();
+    return true;
+}
 
-    retro_system_av_info av{};
-    api_->get_system_av_info(&av);
-    fps_ = av.timing.fps > 0.0 ? av.timing.fps : 60.0;
-    sampleRate_ = av.timing.sample_rate > 0.0 ? av.timing.sample_rate : 44100.0;
-    baseWidth_ = av.geometry.base_width;
-    baseHeight_ = av.geometry.base_height;
-    geometryAspect_ = av.geometry.aspect_ratio;
-    api_->set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
+bool Core::loadGameSpecial(unsigned gameType, const std::vector<std::string>& contentPaths, std::string& error) {
+    if (!initialised_) {
+        error = "core not loaded";
+        return false;
+    }
+    const SubsystemInfo* subsystem = nullptr;
+    for (const SubsystemInfo& candidate : info_.subsystems) {
+        if (candidate.gameType == gameType) {
+            subsystem = &candidate;
+            break;
+        }
+    }
+    if (!subsystem) {
+        error = "this core does not declare that subsystem";
+        return false;
+    }
+    if (contentPaths.size() != subsystem->roms.size()) {
+        error = "expected " + std::to_string(subsystem->roms.size()) + " file(s) for " + subsystem->desc;
+        return false;
+    }
+    if (!api_->load_game_special) {
+        error = "this core does not implement subsystem loading";
+        return false;
+    }
+
+    std::vector<retro_game_info> games(contentPaths.size());
+    // Keeps file bytes alive for any slot that wants them inline rather than
+    // by path (mirrors loadGame()'s own info_.needFullpath handling, just
+    // per-slot instead of once for the whole core).
+    std::vector<std::vector<uint8_t>> buffers(contentPaths.size());
+    for (size_t i = 0; i < contentPaths.size(); ++i) {
+        games[i] = retro_game_info{};
+        games[i].path = contentPaths[i].c_str();
+        if (!subsystem->roms[i].needFullpath) {
+            if (!readFile(contentPaths[i], buffers[i])) {
+                error = "cannot read " + contentPaths[i];
+                return false;
+            }
+            games[i].data = buffers[i].data();
+            games[i].size = buffers[i].size();
+        }
+    }
+    if (!api_->load_game_special(gameType, games.data(), games.size())) {
+        error = "the core did not accept this content";
+        return false;
+    }
+    // The first slot's own declared memory region, if any -- e.g. bsnes's
+    // Super Game Boy subsystem keeps the Game Boy side's battery RAM under
+    // its own id, not RETRO_MEMORY_SAVE_RAM.
+    saveMemoryId_ = !subsystem->roms.empty() && !subsystem->roms.front().memory.empty()
+                        ? subsystem->roms.front().memory.front().type
+                        : RETRO_MEMORY_SAVE_RAM;
+    finishLoad();
     return true;
 }
 
@@ -660,8 +906,8 @@ void Core::loadSaveRam(const std::string& path) {
     if (!gameLoaded_) {
         return;
     }
-    void* memory = api_->get_memory_data(RETRO_MEMORY_SAVE_RAM);
-    const size_t size = api_->get_memory_size(RETRO_MEMORY_SAVE_RAM);
+    void* memory = api_->get_memory_data(saveMemoryId_);
+    const size_t size = api_->get_memory_size(saveMemoryId_);
     if (!memory || size == 0) {
         return;
     }
@@ -676,8 +922,8 @@ bool Core::flushSaveRam(const std::string& path) {
     if (!gameLoaded_) {
         return true;
     }
-    const void* memory = api_->get_memory_data(RETRO_MEMORY_SAVE_RAM);
-    const size_t size = api_->get_memory_size(RETRO_MEMORY_SAVE_RAM);
+    const void* memory = api_->get_memory_data(saveMemoryId_);
+    const size_t size = api_->get_memory_size(saveMemoryId_);
     if (!memory || size == 0) {
         return true;
     }

@@ -107,6 +107,9 @@ public:
     void drain(std::vector<InputEvent>& out);
 
     const KeyMap& keyMap() const { return keyMap_; }
+    // Mutable access for the in-app Controls menu (Settings > Controls) to
+    // rebind an action live, without restarting.
+    KeyMap& keyMap() { return keyMap_; }
 
 private:
     struct HeldAction {

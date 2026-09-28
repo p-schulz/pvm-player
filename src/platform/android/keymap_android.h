@@ -37,4 +37,10 @@ KeyMap defaultKeyMap();
 // Case-insensitive.
 std::optional<int> codeFromName(std::string_view name);
 
+// The inverse of codeFromName(): a name it would parse back to the same
+// code, or nullopt for a code with no name in that vocabulary. Where more
+// than one name means the same code (e.g. "PAD_A" and "BUTTON_A"), returns
+// whichever this file's own table lists first.
+std::optional<std::string> nameFromCode(int code);
+
 }  // namespace input::android

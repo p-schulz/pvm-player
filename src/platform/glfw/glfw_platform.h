@@ -6,6 +6,7 @@
 
 #include <array>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,25 @@ public:
 
     void pollEvents(std::vector<input::InputEvent>& out) override;
     bool translateKeyName(std::string_view name, std::vector<input::InputEvent>& out) const override;
+    bool simulateCapturedInput(std::string_view name) override;
+
+    std::vector<std::string> bindingNames(input::Action action) const override;
+    void rebindAction(input::Action action, int code, const std::string& name) override;
+    void resetActionBinding(input::Action action) override;
+    void beginInputCapture() override {
+        capturing_ = true;
+        capturedInput_.reset();
+        pad_->releaseAll();  // don't leave a button the menu was opened with looking held
+    }
+    void cancelInputCapture() override {
+        capturing_ = false;
+        capturedInput_.reset();
+    }
+    std::optional<CapturedInput> takeCapturedInput() override {
+        std::optional<CapturedInput> result = capturedInput_;
+        capturedInput_.reset();
+        return result;
+    }
 
     std::string dataDir() const override { return exeDir_; }
     std::string assetDir() const override { return exeDir_; }
@@ -80,6 +100,12 @@ private:
     bool padWasPresent_ = false;
     std::array<bool, 15> padButtons_{};     // GLFW_GAMEPAD_BUTTON_LAST + 1
     std::array<bool, 2> triggerSeenRest_{};  // some drivers report 0 until first moved
+
+    // Settings > Controls (see beginInputCapture()): while true, keyCallback()
+    // and pollGamepad() divert the next nameable press here instead of
+    // letting it become a normal action.
+    bool capturing_ = false;
+    std::optional<CapturedInput> capturedInput_;
 
     // Filled by the GLFW callbacks (and the macOS media-key tap) while
     // glfwPollEvents() runs; drained by pollEvents().

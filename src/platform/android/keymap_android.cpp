@@ -180,6 +180,7 @@ KeyMap defaultKeyMap() {
     map.bind(AKEYCODE_SPACE, Action::PlayPause);
     map.bind(AKEYCODE_F, Action::PlayPause);
     map.bind(AKEYCODE_F, Action::ToggleFavorite);  // games: only active in the ROM browser/favorites/in-game
+    map.bind(AKEYCODE_P, Action::PlaySubsystem);   // games: only active in the ROM browser/favorites
     map.bind(AKEYCODE_COMMA, Action::VolumeDown);
     map.bind(AKEYCODE_PERIOD, Action::VolumeUp);
     map.bind(AKEYCODE_M, Action::ToggleOsd);
@@ -230,6 +231,31 @@ std::optional<int> codeFromName(std::string_view rawName) {
     }
     for (const auto& [keyName, code] : kNamedKeys) {
         if (name == keyName) return code;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> nameFromCode(int code) {
+    if (code & kHoldFlag) {
+        const std::optional<std::string> base = nameFromCode(code & ~kHoldFlag);
+        return base ? std::optional<std::string>("HOLD_" + *base) : std::nullopt;
+    }
+    if ((code >= AKEYCODE_A && code <= AKEYCODE_Z)) {
+        return std::string(1, static_cast<char>('A' + (code - AKEYCODE_A)));
+    }
+    if (code >= AKEYCODE_0 && code <= AKEYCODE_9) {
+        return std::string(1, static_cast<char>('0' + (code - AKEYCODE_0)));
+    }
+    if (code >= AKEYCODE_NUMPAD_0 && code <= AKEYCODE_NUMPAD_9) {
+        return "KP_" + std::to_string(code - AKEYCODE_NUMPAD_0);
+    }
+    if (code >= AKEYCODE_F1 && code <= AKEYCODE_F12) {
+        return "F" + std::to_string(code - AKEYCODE_F1 + 1);
+    }
+    for (const auto& [keyName, keyCode] : kNamedKeys) {
+        if (code == keyCode) {
+            return std::string(keyName);
+        }
     }
     return std::nullopt;
 }

@@ -5,6 +5,7 @@
 #include "input/gamepad_input.h"
 
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <utility>
@@ -89,6 +90,7 @@ KeyMap defaultKeyMap() {
     map.bind(GLFW_KEY_SPACE, Action::PlayPause);
     map.bind(GLFW_KEY_F, Action::PlayPause);
     map.bind(GLFW_KEY_F, Action::ToggleFavorite);  // games: only active in the ROM browser/favorites/in-game
+    map.bind(GLFW_KEY_P, Action::PlaySubsystem);   // games: only active in the ROM browser/favorites
 #ifdef _WIN32
     map.bind(kScancodeBase + kWin32MediaPlayPauseScancode, Action::PlayPause);
 #endif
@@ -175,16 +177,8 @@ KeyMap defaultKeyMap() {
     return map;
 }
 
-std::optional<int> codeFromName(std::string_view rawName) {
-    const std::string name = upper(rawName);
-    if (name.rfind("HOLD_", 0) == 0) {
-        const std::optional<int> base = codeFromName(name.substr(5));
-        if (!base || (*base & kHoldFlag)) {
-            return std::nullopt;
-        }
-        return *base | kHoldFlag;
-    }
-    static const std::pair<const char*, int> kPadNames[] = {
+// Shared by codeFromName() and its inverse, nameFromCode().
+constexpr std::pair<const char*, int> kPadNames[] = {
         {"PAD_A", padCode(GLFW_GAMEPAD_BUTTON_A)},
         {"PAD_B", padCode(GLFW_GAMEPAD_BUTTON_B)},
         {"PAD_X", padCode(GLFW_GAMEPAD_BUTTON_X)},
@@ -204,7 +198,17 @@ std::optional<int> codeFromName(std::string_view rawName) {
         {"LSTICK_DOWN", kLeftStickDown},
         {"LSTICK_LEFT", kLeftStickLeft},
         {"LSTICK_RIGHT", kLeftStickRight},
-    };
+};
+
+std::optional<int> codeFromName(std::string_view rawName) {
+    const std::string name = upper(rawName);
+    if (name.rfind("HOLD_", 0) == 0) {
+        const std::optional<int> base = codeFromName(name.substr(5));
+        if (!base || (*base & kHoldFlag)) {
+            return std::nullopt;
+        }
+        return *base | kHoldFlag;
+    }
     for (const auto& [padName, code] : kPadNames) {
         if (name == padName) {
             return code;
@@ -229,6 +233,41 @@ std::optional<int> codeFromName(std::string_view rawName) {
         char* end = nullptr;
         const long scancode = std::strtol(name.c_str() + 9, &end, 16);
         if (end && *end == '\0' && scancode >= 0) return kScancodeBase + static_cast<int>(scancode);
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> nameFromCode(int code) {
+    if (code & kHoldFlag) {
+        const std::optional<std::string> base = nameFromCode(code & ~kHoldFlag);
+        return base ? std::optional<std::string>("HOLD_" + *base) : std::nullopt;
+    }
+    for (const auto& [padName, padCodeValue] : kPadNames) {
+        if (code == padCodeValue) {
+            return std::string(padName);
+        }
+    }
+    if (code >= GLFW_KEY_A && code <= GLFW_KEY_Z) {
+        return std::string(1, static_cast<char>('A' + (code - GLFW_KEY_A)));
+    }
+    if (code >= GLFW_KEY_0 && code <= GLFW_KEY_9) {
+        return std::string(1, static_cast<char>('0' + (code - GLFW_KEY_0)));
+    }
+    if (code >= GLFW_KEY_KP_0 && code <= GLFW_KEY_KP_9) {
+        return "KP_" + std::to_string(code - GLFW_KEY_KP_0);
+    }
+    if (code >= GLFW_KEY_F1 && code <= GLFW_KEY_F25) {
+        return "F" + std::to_string(code - GLFW_KEY_F1 + 1);
+    }
+    for (const auto& [keyName, keyCode] : kNamedKeys) {
+        if (code == keyCode) {
+            return std::string(keyName);
+        }
+    }
+    if (code >= kScancodeBase) {
+        char hex[16];
+        std::snprintf(hex, sizeof(hex), "SCANCODE_%X", code - kScancodeBase);
+        return std::string(hex);
     }
     return std::nullopt;
 }

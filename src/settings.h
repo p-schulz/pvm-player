@@ -95,6 +95,10 @@ struct AppSettings {
     std::string retroLastDirectory;
     // Where the game browser starts (a folder picker in Settings); empty = the media start directory.
     std::string retroStartDirectory;
+    // Where save states and battery saves (SRAM/memory cards) go; empty means
+    // the default, <dataDir>/retro/saves. BIOS files and per-core option
+    // overrides stay under dataDir regardless -- this is just the save data.
+    std::string retroSavesDirectory;
 };
 
 // Reads `path` and overwrites the matching fields of `settings` for any

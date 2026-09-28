@@ -5,7 +5,7 @@
 # the GAMES menu), then runs the Gradle build. Assumes the Android SDK/NDK are
 # already set up; run scripts/setup.sh --android first if they aren't.
 #
-#   scripts/build_apk.sh                  release APK with gambatte + bsnes
+#   scripts/build_apk.sh                  release APK with the default cores (see below)
 #   scripts/build_apk.sh --debug          a debug build instead
 #   scripts/build_apk.sh gambatte mgba    specific cores instead of the default two
 #   scripts/build_apk.sh --no-cores       no game cores at all (smaller APK, no bundled GPL code)
@@ -32,7 +32,7 @@ for arg in "$@"; do
         *) CORES+=("$arg") ;;
     esac
 done
-[ ${#CORES[@]} -gt 0 ] || CORES=(gambatte bsnes)
+[ ${#CORES[@]} -gt 0 ] || CORES=(gambatte bsnes parallel_n64 swanstation)
 
 step() { printf '\n== %s ==\n' "$1"; }
 force_flag() { [ "$FORCE" = 1 ] && echo --force || true; }
@@ -73,7 +73,7 @@ else
     scripts/fetch_cores.sh --android "${CORES[@]}"
     echo
     echo "Note: bundling these into an APK you pass on to someone else is a"
-    echo "GPL-covered combination (gambatte and bsnes are GPL) -- fine for your"
+    echo "GPL-covered combination (all four default cores are GPL) -- fine for your"
     echo "own devices; see README.md's Games section for the licensing note."
 fi
 

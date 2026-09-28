@@ -172,6 +172,8 @@ bool loadSettings(const std::string& path, AppSettings& settings) {
             settings.retroLastDirectory = value;
         } else if (key == "retro_start_directory") {
             settings.retroStartDirectory = value;
+        } else if (key == "retro_saves_directory") {
+            settings.retroSavesDirectory = value;
         } else {
             // Unknown key: ignored rather than treated as an error, so an
             // older config file still loads after new settings are added.
@@ -240,6 +242,7 @@ bool saveSettings(const std::string& path, const AppSettings& settings) {
     file << "retro_smooth=" << (settings.retroSmooth ? "true" : "false") << "\n";
     file << "retro_last_directory=" << settings.retroLastDirectory << "\n";
     file << "retro_start_directory=" << settings.retroStartDirectory << "\n";
+    file << "retro_saves_directory=" << settings.retroSavesDirectory << "\n";
 
     return static_cast<bool>(file);
 }

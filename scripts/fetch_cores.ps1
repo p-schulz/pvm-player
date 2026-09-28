@@ -1,12 +1,16 @@
 # Windows counterpart of fetch_cores.sh: downloads libretro cores (emulators)
 # for x86-64 Windows into cores\, where the player finds them.
 #   powershell -ExecutionPolicy Bypass -File scripts\fetch_cores.ps1 [-Android] [core ...]
-# With no names: gambatte (Game Boy / Color) and bsnes (SNES). The cores come
-# from https://buildbot.libretro.com/nightly/ ("latest" builds, so nothing is
-# pinned); each has its own licence -- gambatte and bsnes are GPL.
+# With no names, the defaults: gambatte (GB/GBC), bsnes (SNES), parallel_n64
+# (N64), swanstation (PS1). The cores come from
+# https://buildbot.libretro.com/nightly/ ("latest" builds, so nothing is
+# pinned); each has its own licence -- all four defaults are GPL (see
+# THIRD_PARTY_LICENSES.md). N64 and PS1 both need real hardware (OpenGL/GLES)
+# rendering support in the player, and PS1 additionally needs a BIOS image of
+# your own in retro/system/ next to your saves -- see README.md.
 # $env:PVM_CORES_DEST overrides the destination folder.
 # -Android fetches the arm64 Android builds for the APK instead (see fetch_cores.sh).
-param([switch]$Android, [string[]]$Cores = @('gambatte', 'bsnes'))
+param([switch]$Android, [string[]]$Cores = @('gambatte', 'bsnes', 'parallel_n64', 'swanstation'))
 $ErrorActionPreference = 'Stop'
 
 $Root = Split-Path -Parent $PSScriptRoot

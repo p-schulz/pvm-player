@@ -10,11 +10,21 @@
 // MpvPlayer tear down their GL resources against a still-live context, then
 // the platform destroys the window.
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "input/input_action.h"
+
+// One physical input caught by beginInputCapture() (Settings > Controls):
+// `code` is this platform's own KeyMap code (bind()/actionsFor() use it
+// directly), `name` is what keys.cfg would call it (round-trips through the
+// platform's own codeFromName()).
+struct CapturedInput {
+    int code = 0;
+    std::string name;
+};
 
 class Platform {
 public:
@@ -51,6 +61,38 @@ public:
     // the name isn't a key here. Lets PVM_TEST_SIMULATE_KEYS exercise the
     // real key map without App knowing key codes.
     virtual bool translateKeyName(std::string_view name, std::vector<input::InputEvent>& out) const = 0;
+    // Test-only twin of translateKeyName(), for PVM_TEST_SIMULATE_KEYS to
+    // exercise Settings > Controls without a real keyboard/gamepad: if a
+    // capture is active (see beginInputCapture()), completes it exactly as
+    // if `name` had been pressed for real. False (and no effect) if nothing
+    // is capturing or `name` isn't a key here.
+    virtual bool simulateCapturedInput(std::string_view name) = 0;
+
+    // --- Remapping (Settings > Controls) ---------------------------------
+    // Display names ("PAD_A", "F", ...) of what's currently bound to
+    // `action`, in binding order; empty if unbound.
+    virtual std::vector<std::string> bindingNames(input::Action action) const = 0;
+    // Rebinds `action` to exactly this one physical input (dropping
+    // whatever it was bound to before), effective immediately, and persists
+    // the change to keys.cfg (its own line only -- see input::saveKeyBinding)
+    // so it survives a restart. `code`/`name` come from takeCapturedInput().
+    virtual void rebindAction(input::Action action, int code, const std::string& name) = 0;
+    // Restores `action`'s compiled-in default binding(s), discarding any
+    // keys.cfg override (including ones from before this session).
+    virtual void resetActionBinding(input::Action action) = 0;
+    // Starts listening for the next physical press (a key or gamepad
+    // button) so the Controls menu can capture it for rebindAction(); while
+    // active, that press does not also reach pollEvents() as a normal
+    // action, so binding a button doesn't also activate whatever it's
+    // asking to be bound to. One-shot: ends itself once something nameable
+    // is captured (an unnameable key, e.g. a bare punctuation key with no
+    // keys.cfg spelling, is silently ignored and capture keeps waiting).
+    virtual void beginInputCapture() = 0;
+    // Ends capture without having caught anything (the user backed out).
+    virtual void cancelInputCapture() = 0;
+    // Non-null once beginInputCapture() has caught something; polled once a
+    // frame while capturing. Consumes the result (reset to nullopt) once read.
+    virtual std::optional<CapturedInput> takeCapturedInput() = 0;
 
     // --- Storage --------------------------------------------------------
     // Where config.cfg, user-edited *.cfg, keys.cfg and caches live

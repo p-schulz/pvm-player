@@ -41,6 +41,8 @@ enum class Action : uint8_t {
     OpenSettings,  // menus: open the settings screen (gamepad Start)
     NextSection,   // teletext: cycle NEWS/TAGESSCHAU/ARD/ZDF; root menu: jump into the next one
     ToggleFavorite,  // games: add/remove the selected/current ROM from Favorites
+    PlaySubsystem,   // games: play the selected/favorited ROM through a bsnes-style
+                     // subsystem (e.g. Super Game Boy) instead of its normal core
 
     // Teletext colour keys
     FastextRed,     // previous page

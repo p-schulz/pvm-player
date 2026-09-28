@@ -1,7 +1,11 @@
+// <cmath> first -- see the comment in app.cpp's includes: on glibc/libstdc++
+// it must win the race against any other header's raw <math.h> or std::floor
+// et al. never get added to `std`.
+#include <cmath>
+
 #include "teletext_view.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstdio>
 
 namespace teletext {

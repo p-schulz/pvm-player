@@ -14,6 +14,7 @@
 #include <EGL/egl.h>
 #include <jni.h>
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -67,6 +68,27 @@ public:
 
     void pollEvents(std::vector<input::InputEvent>& out) override;
     bool translateKeyName(std::string_view name, std::vector<input::InputEvent>& out) const override;
+    // No PVM_TEST_SIMULATE_KEYS-driven capture on Android (no automated test
+    // harness here); always false. Real capture (queueKeyEvent()) works.
+    bool simulateCapturedInput(std::string_view /*name*/) override { return false; }
+
+    std::vector<std::string> bindingNames(input::Action action) const override;
+    void rebindAction(input::Action action, int code, const std::string& name) override;
+    void resetActionBinding(input::Action action) override;
+    void beginInputCapture() override {
+        capturing_ = true;
+        capturedInput_.reset();
+        pad_.releaseAll();  // don't leave a button the menu was opened with looking held
+    }
+    void cancelInputCapture() override {
+        capturing_ = false;
+        capturedInput_.reset();
+    }
+    std::optional<CapturedInput> takeCapturedInput() override {
+        std::optional<CapturedInput> result = capturedInput_;
+        capturedInput_.reset();
+        return result;
+    }
 
     // Config and the unpacked assets live in the app's private files
     // directory; the OS-clearable page caches in its cache directory.
@@ -115,6 +137,11 @@ private:
     std::string cacheDir_;
     std::string nativeLibDir_;
     input::PadTranslator pad_;
+
+    // Settings > Controls (see beginInputCapture()): while true, queueKeyEvent()
+    // diverts the next nameable key here instead of feeding pad_ at all.
+    bool capturing_ = false;
+    std::optional<CapturedInput> capturedInput_;
     mutable uint32_t nextSimulatedGroup_ = 1;
 
     EGLDisplay display_ = EGL_NO_DISPLAY;

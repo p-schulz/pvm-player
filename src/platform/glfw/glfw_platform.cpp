@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <fstream>
 
+#include "input/keymap_persist.h"
 #include "platform/glfw/keymap_glfw.h"
 #include "platform/glfw/paths.h"
 
@@ -165,12 +166,29 @@ void GlfwPlatform::pollGamepad(double now) {
         const bool down = state.buttons[b] == GLFW_PRESS;
         if (down != padButtons_[static_cast<size_t>(b)]) {
             padButtons_[static_cast<size_t>(b)] = down;
+            if (capturing_) {
+                // Swallowed: capture cares only about the first nameable
+                // button pressed, and none of it should also act as
+                // gameplay/navigation input while the Controls menu is
+                // waiting for it.
+                if (down) {
+                    const int code = input::glfw::padCode(b);
+                    if (const std::optional<std::string> name = input::glfw::nameFromCode(code)) {
+                        capturedInput_ = CapturedInput{code, *name};
+                        capturing_ = false;
+                    }
+                }
+                continue;
+            }
             if (down) {
                 pad_->keyDown(input::glfw::padCode(b), now);
             } else {
                 pad_->keyUp(input::glfw::padCode(b), now);
             }
         }
+    }
+    if (capturing_) {
+        return;  // sticks/triggers are never capturable -- see Platform::beginInputCapture()
     }
     pad_->setAxis(input::PadAxis::LeftX, state.axes[GLFW_GAMEPAD_AXIS_LEFT_X], now);
     pad_->setAxis(input::PadAxis::LeftY, state.axes[GLFW_GAMEPAD_AXIS_LEFT_Y], now);
@@ -318,10 +336,63 @@ void GlfwPlatform::keyCallback(GLFWwindow* window, int key, int scancode, int ac
     if (!phase) {
         return;
     }
+    if (self->capturing_) {
+        // Swallowed either way: an unnameable key (no keys.cfg spelling for
+        // it) just keeps capture waiting rather than acting as a normal key.
+        if (*phase == input::Phase::Press) {
+            const int code = input::glfw::inputCode(key, scancode);
+            if (const std::optional<std::string> name = input::glfw::nameFromCode(code)) {
+                self->capturedInput_ = CapturedInput{code, *name};
+                self->capturing_ = false;
+            }
+        }
+        return;
+    }
     // One physical key may emit several actions (B = aspect ratio while
     // playing, blue on a teletext page); each screen reacts to at most one.
     const uint32_t group = self->nextGroup_++;
     for (const input::Action a : self->keyMap_.actionsFor(input::glfw::inputCode(key, scancode))) {
         self->pending_.push_back(input::InputEvent{a, *phase, 1.0f, group});
     }
+}
+
+bool GlfwPlatform::simulateCapturedInput(std::string_view name) {
+    if (!capturing_) {
+        return false;
+    }
+    const std::optional<int> code = input::glfw::codeFromName(name);
+    if (!code) {
+        return false;
+    }
+    const std::optional<std::string> canonicalName = input::glfw::nameFromCode(*code);
+    if (!canonicalName) {
+        return false;  // not nameable, same as a real press of it: capture keeps waiting
+    }
+    capturedInput_ = CapturedInput{*code, *canonicalName};
+    capturing_ = false;
+    return true;
+}
+
+std::vector<std::string> GlfwPlatform::bindingNames(input::Action action) const {
+    std::vector<std::string> names;
+    for (int code : keyMap_.codesFor(action)) {
+        if (const std::optional<std::string> name = input::glfw::nameFromCode(code)) {
+            names.push_back(*name);
+        }
+    }
+    return names;
+}
+
+void GlfwPlatform::rebindAction(input::Action action, int code, const std::string& name) {
+    keyMap_.unbindAction(action);
+    keyMap_.bind(code, action);
+    input::saveKeyBinding(exeDir_ + "/keys.cfg", action, {name});
+}
+
+void GlfwPlatform::resetActionBinding(input::Action action) {
+    keyMap_.unbindAction(action);
+    for (int code : input::glfw::defaultKeyMap().codesFor(action)) {
+        keyMap_.bind(code, action);
+    }
+    input::clearKeyBindingOverride(exeDir_ + "/keys.cfg", action);
 }

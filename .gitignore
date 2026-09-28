@@ -24,3 +24,6 @@
 # libretro cores (scripts/fetch_cores.sh) and their saves
 /cores/
 /thirdparty/cores-android/
+
+# ROMs/BIOS files used for manual testing -- never committed (copyrighted)
+/tests/retro/

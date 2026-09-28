@@ -18,6 +18,7 @@
 enum class RootItem { PlayMedia, Tv, Tagesschau, News, Games, Ard, Zdf, Settings, Quit };
 
 class Platform;
+struct CapturedInput;
 struct ImVec2;
 struct ImVec4;
 
@@ -72,6 +73,12 @@ public:
         // A running game instead (path is its ROM): resumed from a save state
         // taken for the occasion.
         bool game = false;
+        // Set only for a subsystem game (retro::Session::openSubsystem(),
+        // e.g. Super Game Boy): what it takes to relaunch the same way,
+        // since `path` alone (slot 0's content) isn't enough. 0 = not one.
+        unsigned subsystemGameType = 0;
+        std::string subsystemCoreName;
+        std::vector<std::string> subsystemContentPaths;
     };
     PlaybackSnapshot snapshotPlayback();
     void restorePlayback(const PlaybackSnapshot& snapshot);
@@ -88,6 +95,8 @@ private:
     TvMenu,
     GamesMenu,      // GAMES root-menu entry: browse ROMs, or Favorites
     GameFavorites,  // favorited ROMs, added from the browser/in-game menu (ToggleFavorite)
+    PickSubsystemContent,  // picking the 2nd (3rd, ...) file of a subsystem game (PlaySubsystem)
+    ControlMapping,  // Settings > Controls: rebinding keys/buttons live
 };
     enum class MediaKind { Unknown, Video, Audio };
 
@@ -259,6 +268,29 @@ private:
     void loadGameFavorites(const std::string& path);
     void saveGameFavorites() const;
     void enterFileBrowser(std::vector<std::string> extensions, bool games = false);
+
+    // Subsystem games (see retro::SubsystemInfo, e.g. bsnes's Super Game Boy):
+    // a core loading more than one piece of content together. `match` names
+    // the core + subsystem, `primaryPath` is the file the player already
+    // picked (the ROM browser's or Favorites' selection) -- slot 0. Prompts
+    // for the remaining slots one at a time (Screen::PickSubsystemContent),
+    // then launches.
+    void beginSubsystemPlay(const retro::SubsystemMatch& match, const std::string& primaryPath);
+    // Opens the file browser (filtered to the next slot's extensions) for the
+    // subsystem content still needed; called once per remaining slot.
+    void promptNextSubsystemContent();
+    void launchPendingSubsystem();
+    void cancelPendingSubsystem();
+
+    // Settings > Controls: rebinding keys/buttons without a restart. See
+    // Platform::beginInputCapture(). handleInput()'s ControlMapping case
+    // drives all of this; App::frame() polls takeCapturedInput() while
+    // waiting (see controlMappingWaiting_) since it can complete on any
+    // frame, not just in response to an event.
+    void renderControlMapping();
+    void beginControlRebind(input::Action action);
+    void finishControlRebind(const CapturedInput& captured);
+    void cancelControlRebind();
 
     // Games (libretro cores). startGame() picks the core for the ROM and
     // switches to Screen::Game; the game screen passes the pad to the core,
@@ -459,6 +491,18 @@ private:
     // Games: the cores found at startup, the running game (retro_.active()
     // while Screen::Game), and its menu and picture options (persisted).
     std::vector<retro::CoreInfo> retroCores_;
+    bool anySubsystemCores_ = false;  // any scanned core declares a subsystem (Super Game Boy, ...)
+
+    // Settings > Controls. controlMappingRow_ indexes kControlMappingActions
+    // (app.cpp); while controlMappingWaiting_, the platform is listening
+    // for the next press to bind to controlMappingPendingAction_, and
+    // controlMappingWaitDeadline_ (platform_->now()-based) auto-cancels it
+    // if nothing arrives -- there is no button that means "cancel" here,
+    // since literally any press is what's being waited for.
+    int controlMappingRow_ = 0;
+    bool controlMappingWaiting_ = false;
+    input::Action controlMappingPendingAction_ = input::Action::Confirm;
+    double controlMappingWaitDeadline_ = 0.0;
     retro::Session retro_;
     bool browsingGames_ = false;  // the file browser is listing ROMs
     bool gameMenuVisible_ = false;
@@ -472,7 +516,14 @@ private:
     bool retroSmooth_ = true;
     std::string retroLastDirectory_;
     std::string retroStartDirectory_;
-    bool pickingGameDirectory_ = false;  // Screen::PickStartDirectory is choosing the ROM folder
+    // Where save states and battery saves/memory cards go; empty means the
+    // default, platform_->dataDir() + "/retro/saves" -- see retroSavesDir().
+    std::string retroSavesDirectory_;
+    // Which setting Screen::PickStartDirectory's folder picker is filling in.
+    enum class DirectoryPickTarget { MediaStart, RomStart, SavesDirectory };
+    DirectoryPickTarget directoryPickTarget_ = DirectoryPickTarget::MediaStart;
+    // The resolved saves directory: retroSavesDirectory_ if set, else the default.
+    std::string retroSavesDir() const;
     std::string toastText_;
     double toastHideAtTime_ = 0.0;
 
@@ -553,6 +604,16 @@ private:
     // Backs the in-game menu's FAVORITE row (see buildGameMenuRows()): the
     // SettingsRowDesc bool machinery needs an addressable bool, not a computed one.
     bool gameMenuFavoriteFlag_ = false;
+
+    // Subsystem games (Screen::PickSubsystemContent, PlaySubsystem): the
+    // core+subsystem being launched, the content paths gathered so far
+    // (index 0 is always the ROM the player originally picked), and which
+    // slot promptNextSubsystemContent() is currently asking for. Raw
+    // pointers into retroCores_, which is never resized after init().
+    const retro::CoreInfo* pendingSubsystemCore_ = nullptr;
+    const retro::SubsystemInfo* pendingSubsystemInfo_ = nullptr;
+    std::vector<std::string> pendingSubsystemPaths_;
+    size_t pendingSubsystemSlot_ = 0;
     int tvChannelIndex_ = 0;   // the channel playing (valid while cameFromTv_)
     bool tvTriedFallback_ = false;
     FileBrowser fileBrowser_;

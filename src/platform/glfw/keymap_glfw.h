@@ -36,4 +36,10 @@ KeyMap defaultKeyMap();
 // Case-insensitive.
 std::optional<int> codeFromName(std::string_view name);
 
+// The inverse of codeFromName(): a name it would parse back to the same
+// code, or nullopt for a code with no name in that vocabulary (an
+// unmapped GLFW key -- happens for some punctuation keys; the in-app
+// Controls menu simply won't offer to bind to one of those).
+std::optional<std::string> nameFromCode(int code);
+
 }  // namespace input::glfw

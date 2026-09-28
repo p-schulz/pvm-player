@@ -200,6 +200,7 @@ endif()
 add_library(input_core STATIC
   src/input/input_action.cpp
   src/input/keymap.cpp
+  src/input/keymap_persist.cpp
   src/input/gamepad_input.cpp
 )
 target_include_directories(input_core PUBLIC src)
