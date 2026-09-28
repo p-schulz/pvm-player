@@ -23,6 +23,7 @@ enum {
     AKEYCODE_G = 35,
     AKEYCODE_I = 37,
     AKEYCODE_M = 41,
+    AKEYCODE_P = 44,
     AKEYCODE_Q = 45,
     AKEYCODE_R = 46,
     AKEYCODE_S = 47,
