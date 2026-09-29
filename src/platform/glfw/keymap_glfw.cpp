@@ -137,6 +137,14 @@ KeyMap defaultKeyMap() {
     map.bind(GLFW_KEY_KP_ENTER, Action::RetroStart);
     map.bind(GLFW_KEY_RIGHT_SHIFT, Action::RetroSelect);
     map.bind(GLFW_KEY_TAB, Action::RetroSelect);
+    // N64 pad C buttons: a gamepad's right stick is read continuously
+    // instead (Platform::gamepadStick()), but a keyboard has no stick to
+    // read, so these get their own keys -- vi-style, next to the WASD-ish
+    // face-button cluster above.
+    map.bind(GLFW_KEY_K, Action::RetroCUp);
+    map.bind(GLFW_KEY_J, Action::RetroCDown);
+    map.bind(GLFW_KEY_H, Action::RetroCLeft);
+    map.bind(GLFW_KEY_L, Action::RetroCRight);
 
     // Gamepad: the same layout as the Android handheld defaults. GLFW names
     // buttons by position in the Xbox layout (A is the bottom one).

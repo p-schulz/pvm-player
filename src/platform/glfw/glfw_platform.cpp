@@ -192,6 +192,7 @@ void GlfwPlatform::pollGamepad(double now) {
     }
     pad_->setAxis(input::PadAxis::LeftX, state.axes[GLFW_GAMEPAD_AXIS_LEFT_X], now);
     pad_->setAxis(input::PadAxis::LeftY, state.axes[GLFW_GAMEPAD_AXIS_LEFT_Y], now);
+    pad_->setAxis(input::PadAxis::RightX, state.axes[GLFW_GAMEPAD_AXIS_RIGHT_X], now);
     pad_->setAxis(input::PadAxis::RightY, state.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y], now);
     // Triggers rest at -1 and travel to +1; PadTranslator wants 0..1. A
     // trigger that has not yet been seen at rest is ignored (some drivers
@@ -207,6 +208,15 @@ void GlfwPlatform::pollGamepad(double now) {
         pad_->setAxis(padTriggers[t], value, now);
     }
     pad_->update(now);
+}
+
+void GlfwPlatform::gamepadStick(float& leftX, float& leftY, float& rightX, float& rightY) const {
+    leftX = pad_->axis(input::PadAxis::LeftX);
+    leftY = pad_->axis(input::PadAxis::LeftY);
+    rightX = pad_->axis(input::PadAxis::RightX);
+    rightY = pad_->axis(input::PadAxis::RightY);
+    input::applyStickDeadzone(leftX, leftY);
+    input::applyStickDeadzone(rightX, rightY);
 }
 
 std::vector<std::string> GlfwPlatform::coreDirs() const {

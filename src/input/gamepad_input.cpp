@@ -24,6 +24,18 @@ std::vector<AnalogBinding> defaultAnalogBindings() {
     };
 }
 
+void applyStickDeadzone(float& x, float& y) {
+    const float mag = std::sqrt(x * x + y * y);
+    if (mag <= kStickDeadzone) {
+        x = y = 0.0f;
+        return;
+    }
+    const float rescaled = (std::min(mag, 1.0f) - kStickDeadzone) / (1.0f - kStickDeadzone);
+    const float k = rescaled / mag;  // dividing by the raw (unclamped) mag keeps direction exact
+    x *= k;
+    y *= k;
+}
+
 PadTranslator::PadTranslator(KeyMap keyMap, std::vector<AnalogBinding> analog)
     : keyMap_(std::move(keyMap)), analog_(std::move(analog)), analogState_(analog_.size()) {}
 

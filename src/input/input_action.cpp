@@ -19,6 +19,7 @@ constexpr std::array<const char*, kActionCount> kNames = {
     "digit_2",      "digit_3",       "digit_4",       "digit_5",      "digit_6",       "digit_7",
     "digit_8",      "digit_9",       "retro_a",       "retro_b",      "retro_x",       "retro_y",
     "retro_l",      "retro_r",       "retro_l2",      "retro_r2",     "retro_select",  "retro_start",
+    "retro_c_up",   "retro_c_down",  "retro_c_left",  "retro_c_right",
 };
 
 std::string normalize(std::string_view name) {

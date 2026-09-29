@@ -71,6 +71,7 @@ public:
     // No PVM_TEST_SIMULATE_KEYS-driven capture on Android (no automated test
     // harness here); always false. Real capture (queueKeyEvent()) works.
     bool simulateCapturedInput(std::string_view /*name*/) override { return false; }
+    void gamepadStick(float& leftX, float& leftY, float& rightX, float& rightY) const override;
 
     std::vector<std::string> bindingNames(input::Action action) const override;
     void rebindAction(input::Action action, int code, const std::string& name) override;

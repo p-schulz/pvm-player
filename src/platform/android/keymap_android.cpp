@@ -158,6 +158,14 @@ KeyMap defaultKeyMap() {
     map.bind(AKEYCODE_NUMPAD_ENTER, Action::RetroStart);
     map.bind(AKEYCODE_SHIFT_RIGHT, Action::RetroSelect);
     map.bind(AKEYCODE_TAB, Action::RetroSelect);
+    // N64 pad C buttons: a gamepad's right stick is read continuously
+    // instead (Platform::gamepadStick()), but a keyboard has no stick to
+    // read, so these get their own keys -- vi-style, next to the WASD-ish
+    // face-button cluster above.
+    map.bind(AKEYCODE_K, Action::RetroCUp);
+    map.bind(AKEYCODE_J, Action::RetroCDown);
+    map.bind(AKEYCODE_H, Action::RetroCLeft);
+    map.bind(AKEYCODE_L, Action::RetroCRight);
 
     // Media keys (a headset, a keyboard, the system's media buttons). The
     // volume keys are deliberately not bound: they stay with the system.

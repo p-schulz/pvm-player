@@ -171,6 +171,12 @@ public:
     void reset();
 
     void setButtons(uint32_t mask) { buttons_ = mask; }
+    // Continuous stick position for RETRO_DEVICE_ANALOG: index 0 is the left
+    // stick (an N64 pad's main stick; also what most other analog-capable
+    // pads use for movement), 1 the right (offered for cores whose own
+    // options can read C buttons or a second stick off it, e.g. parallel_n64's
+    // "C Button Mode"). x/y are -1..1; stored as libretro's -0x8000..0x7fff.
+    void setAnalogStick(int index, float x, float y);
 
     // Called from inside run() with interleaved 16-bit stereo frames at
     // sampleRate().
@@ -250,6 +256,9 @@ private:
     int pixelFormat_ = 0;  // RETRO_PIXEL_FORMAT_0RGB1555, libretro's default
     Frame frame_;
     uint32_t buttons_ = 0;
+    // [0] left stick, [1] right stick; see setAnalogStick().
+    int16_t analogX_[2] = {0, 0};
+    int16_t analogY_[2] = {0, 0};
     double fps_ = 60.0;
     double sampleRate_ = 44100.0;
     unsigned baseWidth_ = 0;

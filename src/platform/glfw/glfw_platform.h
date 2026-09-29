@@ -43,6 +43,7 @@ public:
     void pollEvents(std::vector<input::InputEvent>& out) override;
     bool translateKeyName(std::string_view name, std::vector<input::InputEvent>& out) const override;
     bool simulateCapturedInput(std::string_view name) override;
+    void gamepadStick(float& leftX, float& leftY, float& rightX, float& rightY) const override;
 
     std::vector<std::string> bindingNames(input::Action action) const override;
     void rebindAction(input::Action action, int code, const std::string& name) override;

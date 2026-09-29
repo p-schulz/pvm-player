@@ -65,7 +65,11 @@ enum class Action : uint8_t {
 
     // Games (libretro cores): the RetroPad. Its D-pad is Up/Down/Left/Right.
     // Unlike everything above these are held state, not one-shot commands:
-    // the game sees the button down from Press to Release.
+    // the game sees the button down from Press to Release. The analog stick
+    // (an N64 pad's main stick, or any core that asks for RETRO_DEVICE_ANALOG)
+    // is not in this enum -- it needs a continuous position, not a one-shot
+    // action, so it goes straight from Platform::gamepadStick() to
+    // retro::Session::setAnalogStick() every frame instead (see app.cpp).
     RetroA,
     RetroB,
     RetroX,
@@ -76,6 +80,11 @@ enum class Action : uint8_t {
     RetroR2,
     RetroSelect,
     RetroStart,
+    // The N64 pad's C buttons; RetroL2 already doubles as its Z trigger.
+    RetroCUp,
+    RetroCDown,
+    RetroCLeft,
+    RetroCRight,
 
     Count
 };
@@ -116,9 +125,9 @@ std::optional<Action> actionFromName(std::string_view name);
 // 0..9 for Digit0..Digit9, else -1.
 int digitOf(Action action);
 
-// RetroA..RetroStart.
+// RetroA..RetroCRight.
 inline bool isRetroAction(Action action) {
-    return action >= Action::RetroA && action <= Action::RetroStart;
+    return action >= Action::RetroA && action <= Action::RetroCRight;
 }
 
 }  // namespace input

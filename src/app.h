@@ -510,6 +510,14 @@ private:
     int gameSlot_ = 0;
     bool retroStartDown_ = false;
     bool retroSelectDown_ = false;
+    // The N64 pad's C buttons: digital held state (see handleGameInput()),
+    // blended into the right stick's continuous position every frame
+    // (App::frame()) since there is no RETRO_DEVICE_ID_JOYPAD_* for a C
+    // button -- cores read C buttons off the right analog stick instead.
+    bool retroCUpDown_ = false;
+    bool retroCDownDown_ = false;
+    bool retroCLeftDown_ = false;
+    bool retroCRightDown_ = false;
     bool suspended_ = false;
     int retroScaleIndex_ = 0;
     int retroAspectIndex_ = 0;

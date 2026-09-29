@@ -326,6 +326,12 @@ constexpr input::Action kControlMappingActions[] = {
     input::Action::RetroY,      input::Action::RetroL,      input::Action::RetroR,
     input::Action::RetroL2,     input::Action::RetroR2,     input::Action::RetroSelect,
     input::Action::RetroStart,
+    // N64 pad C buttons; RetroL2 above doubles as its Z trigger. The analog
+    // stick itself is not bindable here -- it's read continuously from
+    // whatever the platform calls its left stick, not through a KeyMap (see
+    // Platform::gamepadStick()).
+    input::Action::RetroCUp,    input::Action::RetroCDown,  input::Action::RetroCLeft,
+    input::Action::RetroCRight,
 };
 
 // "toggle_favorite" -> "Toggle Favorite", "retro_a" -> "Retro A": readable
@@ -805,6 +811,28 @@ void App::frame(const std::vector<input::InputEvent>& events) {
                             (screen_ == Screen::Game && !gameMenuVisible_ && !suspended_));
 
     if (screen_ == Screen::Game) {
+        // The analog stick (an N64 pad's main stick, or any core asking for
+        // RETRO_DEVICE_ANALOG) needs its continuous position every frame, not
+        // a one-shot action -- see Platform::gamepadStick(). Held off while
+        // the pause menu is up or the app is suspended, same as the buttons
+        // (openGameMenu() -> releaseButtons() already zeroes both sticks).
+        if (!gameMenuVisible_ && !suspended_) {
+            float leftX = 0.0f, leftY = 0.0f, rightX = 0.0f, rightY = 0.0f;
+            platform_->gamepadStick(leftX, leftY, rightX, rightY);
+            // A keyboard (or any C-button binding that isn't the right stick
+            // itself) has no analog position to give the core, so a held
+            // digital C button drives the right stick to full deflection
+            // instead -- the same channel the analog binding uses, since a
+            // real gamepad's right stick already IS this core's C buttons.
+            if (retroCLeftDown_ != retroCRightDown_) {
+                rightX = retroCLeftDown_ ? -1.0f : 1.0f;
+            }
+            if (retroCUpDown_ != retroCDownDown_) {
+                rightY = retroCUpDown_ ? -1.0f : 1.0f;
+            }
+            retro_.setAnalogStick(0, leftX, leftY);
+            retro_.setAnalogStick(1, rightX, rightY);
+        }
         retro_.update(platform_->now(), gameMenuVisible_ || suspended_);
         if (retro_.takeShutdownRequest()) {
             closeGame();
@@ -2404,6 +2432,7 @@ void App::launchPendingSubsystem() {
         gameMenuVisible_ = false;
         gameMenuRow_ = 0;
         retroStartDown_ = retroSelectDown_ = false;
+        retroCUpDown_ = retroCDownDown_ = retroCLeftDown_ = retroCRightDown_ = false;
         screen_ = Screen::Game;
     }
     cancelPendingSubsystem();
@@ -3438,6 +3467,7 @@ void App::startGame(const std::string& romPath) {
     gameMenuVisible_ = false;
     gameMenuRow_ = 0;
     retroStartDown_ = retroSelectDown_ = false;
+    retroCUpDown_ = retroCDownDown_ = retroCLeftDown_ = retroCRightDown_ = false;
     screen_ = Screen::Game;
 }
 
@@ -3539,6 +3569,22 @@ void App::handleGameInput(const input::InputEvent& event) {
         retroStartDown_ = down;
     } else if (action == Action::RetroSelect) {
         retroSelectDown_ = down;
+    } else if (action == Action::RetroCUp || action == Action::RetroCDown || action == Action::RetroCLeft ||
+               action == Action::RetroCRight) {
+        // No RETRO_DEVICE_ID_JOYPAD_* exists for a C button; App::frame()
+        // blends this held state into the right stick's continuous position
+        // instead (see retroCUpDown_ etc, app.h).
+        if (event.phase != input::Phase::Repeat) {
+            switch (action) {
+                case Action::RetroCUp: retroCUpDown_ = down; break;
+                case Action::RetroCDown: retroCDownDown_ = down; break;
+                case Action::RetroCLeft: retroCLeftDown_ = down; break;
+                default: retroCRightDown_ = down; break;
+            }
+        }
+        if (!gameMenuVisible_) {
+            return;
+        }
     }
 
     if (gameMenuVisible_) {

@@ -52,6 +52,10 @@ public:
     // A RetroPad button (PadButton) went down or up. Held buttons are the
     // core's input on every frame until released.
     void setButton(int button, bool down);
+    // The analog stick's continuous position (see Core::setAnalogStick);
+    // forwarded once a frame while the game screen has focus, not through
+    // the discrete button/action path. No-op with no core loaded.
+    void setAnalogStick(int index, float x, float y);
     void releaseButtons();
 
     // Runs however many emulated frames are due at time `now` (seconds,

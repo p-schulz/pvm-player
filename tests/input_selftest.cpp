@@ -83,7 +83,8 @@ void testDefaultsMatchLegacyKeys() {
         CHECK(emits(map, GLFW_KEY_0 + d, digit));
         CHECK(emits(map, GLFW_KEY_KP_0 + d, digit));
     }
-    CHECK(map.actionsFor(GLFW_KEY_J).empty());
+    // J is the N64 pad's C-Down (vi-style H/J/K/L cluster, see keymap_glfw.cpp).
+    CHECK(emits(map, GLFW_KEY_J, Action::RetroCDown));
 }
 
 // Each screen reacts to a subset of actions. A key emitting two actions from

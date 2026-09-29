@@ -16,6 +16,8 @@ including the copyleft ones.
 | [libretro.h](#libretroh) | the core-loading API (`src/retro/`) | MIT |
 | [gambatte](#gambatte-libretro-core) | Game Boy / Color core (fetched, not bundled in source) | GPL-2.0-only |
 | [bsnes](#bsnes-libretro-core) | SNES core (fetched, not bundled in source) | GPL-3.0-or-later (core); ISC-style (nall/ruby/hiro/libco) |
+| [parallel_n64](#parallel_n64-libretro-core) | N64 core, hardware-rendered (fetched, not bundled in source) | GPL-2.0-only (mupen64plus-core, GLideN64) |
+| [swanstation](#swanstation-libretro-core) | PS1 core, hardware-rendered (fetched, not bundled in source) | GPL-3.0-or-later |
 | [libmpv + FFmpeg](#libmpv--ffmpeg-android-prebuilt) (Android prebuilt) | video/audio playback | LGPL-2.1-or-later |
 | [libmpv](#libmpv-desktop) (desktop, system/vendored) | video/audio playback | GPL-2.0-or-later by default, or LGPL-2.1-or-later -- depends on how your copy was built; see below |
 | [Dear ImGui](#dear-imgui) | UI | MIT |
@@ -97,13 +99,36 @@ purpose with or without fee is hereby granted, provided that the above
 copyright notice and this permission notice appear in all copies," with the
 usual "AS IS" disclaimer.
 
+## parallel_n64 (libretro core)
+
+[libretro/parallel-n64](https://github.com/libretro/parallel-n64), fetched by
+`scripts/fetch_cores.sh` (not built from or vendored in this repository). It
+is a fork/mashup of several upstream N64 emulation projects rather than a
+single-license tree with one top-level LICENSE file: the CPU/RSP emulation
+comes from **mupen64plus-core**, and the GL renderer PVM Player actually
+drives via the hardware-rendering path (`RETRO_ENVIRONMENT_SET_HW_RENDER`) is
+**GLideN64** -- both **GPL-2.0-only**, same terms as gambatte above:
+<https://www.gnu.org/licenses/old-licenses/gpl-2.0.html>. Like every other
+core, it is loaded at run time as its own separate shared library through the
+(MIT) libretro API, never linked into PVM Player's own binary.
+
+## swanstation (libretro core)
+
+[libretro/swanstation](https://github.com/libretro/swanstation), fetched by
+`scripts/fetch_cores.sh` (not built from or vendored in this repository). A
+PS1 core, **GPL-3.0-or-later** (its own `LICENSE` file), matching this
+project's own license. Also hardware-rendered via
+`RETRO_ENVIRONMENT_SET_HW_RENDER`. Needs a PS1 BIOS image of your own placed
+in `retro/system/` (not fetched or bundled by anything here -- see
+README.md) before it can boot a disc.
+
 **If you redistribute an APK you built with `scripts/build_apk.sh` and its
-default cores:** bundling gambatte and/or bsnes into the same APK as PVM
-Player's own compiled code is why this project is GPL-3.0-or-later rather
-than a permissive license -- so the combination is squarely GPL-compliant
-either way, the same position RetroArch's own distribution is in. `--no-cores`
-leaves them out entirely if you'd rather not carry GPL binaries in your build
-at all.
+default cores:** bundling gambatte, bsnes, parallel_n64 and/or swanstation
+into the same APK as PVM Player's own compiled code is why this project is
+GPL-3.0-or-later rather than a permissive license -- so the combination is
+squarely GPL-compliant either way, the same position RetroArch's own
+distribution is in. `--no-cores` leaves them out entirely if you'd rather not
+carry GPL binaries in your build at all.
 
 ## libmpv + FFmpeg (Android prebuilt)
 

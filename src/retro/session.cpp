@@ -123,6 +123,8 @@ void Session::releaseButtons() {
     buttons_ = 0;
     if (core_) {
         core_->setButtons(0);
+        core_->setAnalogStick(0, 0.0f, 0.0f);
+        core_->setAnalogStick(1, 0.0f, 0.0f);
     }
 }
 
@@ -137,6 +139,12 @@ void Session::setButton(int button, bool down) {
     }
     if (core_) {
         core_->setButtons(buttons_);
+    }
+}
+
+void Session::setAnalogStick(int index, float x, float y) {
+    if (core_) {
+        core_->setAnalogStick(index, x, y);
     }
 }
 

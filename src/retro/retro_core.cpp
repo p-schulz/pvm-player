@@ -495,7 +495,7 @@ struct Bridge {
                 *static_cast<bool*>(data) = false;
                 return true;
             case RETRO_ENVIRONMENT_GET_INPUT_DEVICE_CAPABILITIES:
-                *static_cast<uint64_t*>(data) = 1ull << RETRO_DEVICE_JOYPAD;
+                *static_cast<uint64_t*>(data) = (1ull << RETRO_DEVICE_JOYPAD) | (1ull << RETRO_DEVICE_ANALOG);
                 return true;
             case RETRO_ENVIRONMENT_GET_LOG_INTERFACE:
                 static_cast<retro_log_callback*>(data)->log = &Bridge::log;
@@ -659,9 +659,21 @@ struct Bridge {
 
     static void inputPoll() {}
 
-    static int16_t inputState(unsigned port, unsigned device, unsigned /*index*/, unsigned id) {
+    static int16_t inputState(unsigned port, unsigned device, unsigned index, unsigned id) {
         Core* core = g_active;
-        if (!core || port != 0 || (device & RETRO_DEVICE_MASK) != RETRO_DEVICE_JOYPAD) {
+        if (!core || port != 0) {
+            return 0;
+        }
+        const unsigned type = device & RETRO_DEVICE_MASK;
+        if (type == RETRO_DEVICE_ANALOG) {
+            // Only the two sticks (index 0/1) as X/Y (id 0/1); ANALOG_BUTTON
+            // (analog-pressure face buttons) is not modelled here.
+            if (index > 1 || id > 1) {
+                return 0;
+            }
+            return id == RETRO_DEVICE_ID_ANALOG_X ? core->analogX_[index] : core->analogY_[index];
+        }
+        if (type != RETRO_DEVICE_JOYPAD) {
             return 0;
         }
         if (id == RETRO_DEVICE_ID_JOYPAD_MASK) {
@@ -872,6 +884,15 @@ void Core::unloadGame() {
         api_->unload_game();
     }
     gameLoaded_ = false;
+}
+
+void Core::setAnalogStick(int index, float x, float y) {
+    if (index < 0 || index > 1) {
+        return;
+    }
+    auto toInt16 = [](float v) { return static_cast<int16_t>(std::clamp(v, -1.0f, 1.0f) * 32767.0f); };
+    analogX_[index] = toInt16(x);
+    analogY_[index] = toInt16(y);
 }
 
 void Core::run() {

@@ -78,6 +78,18 @@ struct AnalogBinding {
 // scroll (teletext) at once -- each screen reacts to only one of them.
 std::vector<AnalogBinding> defaultAnalogBindings();
 
+// Dead zone for a stick read continuously as a 2-axis position (the RetroPad
+// analog stick pass-through, Platform::gamepadStick()) -- distinct from
+// AnalogBinding's per-axis dead zone above, which drives the tick-based
+// actions (seek/volume/scroll/triggers).
+constexpr float kStickDeadzone = 0.20f;
+
+// Radial dead zone: (x, y) within kStickDeadzone of the centre becomes
+// (0, 0); beyond it, magnitude rescales linearly over the remaining travel
+// (direction unchanged) so the stick still reaches full deflection just past
+// the dead zone instead of losing that range.
+void applyStickDeadzone(float& x, float& y);
+
 class PadTranslator {
 public:
     static constexpr double kRepeatDelaySeconds = 0.4;
@@ -95,6 +107,10 @@ public:
 
     // A new value for an axis (called on every motion event).
     void setAxis(PadAxis axis, float value, double now);
+    // The last value set for an axis (0 if never set), for a caller that
+    // needs the raw continuous position rather than an action -- see
+    // Platform::gamepadStick().
+    float axis(PadAxis axis) const { return axes_[static_cast<size_t>(axis)]; }
 
     // Advances timers -- repeats, hold detection, analog ticks -- to `now`.
     void update(double now);

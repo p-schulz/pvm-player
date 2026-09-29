@@ -217,6 +217,15 @@ void AndroidPlatform::queueAxis(input::PadAxis axis, float value) {
     pad_.setAxis(axis, value, now());
 }
 
+void AndroidPlatform::gamepadStick(float& leftX, float& leftY, float& rightX, float& rightY) const {
+    leftX = pad_.axis(input::PadAxis::LeftX);
+    leftY = pad_.axis(input::PadAxis::LeftY);
+    rightX = pad_.axis(input::PadAxis::RightX);
+    rightY = pad_.axis(input::PadAxis::RightY);
+    input::applyStickDeadzone(leftX, leftY);
+    input::applyStickDeadzone(rightX, rightY);
+}
+
 void AndroidPlatform::resetInput() {
     pad_.releaseAll();
     discardEvents();

@@ -67,6 +67,16 @@ public:
     // if `name` had been pressed for real. False (and no effect) if nothing
     // is capturing or `name` isn't a key here.
     virtual bool simulateCapturedInput(std::string_view name) = 0;
+    // The left and right stick's current position (-1..1, dead zone already
+    // applied). Unlike everything else here this is read once a frame while
+    // a libretro game has focus and forwarded straight to retro::Session::
+    // setAnalogStick(), instead of going through pollEvents() -- an analog
+    // stick needs a continuous position, not a one-shot/held action. The
+    // left stick is a RetroPad's/N64 pad's analog stick; the right is
+    // offered too since some cores' own options (e.g. parallel_n64's
+    // "C Button Mode") can read C buttons off a second stick instead of
+    // digital buttons.
+    virtual void gamepadStick(float& leftX, float& leftY, float& rightX, float& rightY) const = 0;
 
     // --- Remapping (Settings > Controls) ---------------------------------
     // Display names ("PAD_A", "F", ...) of what's currently bound to
