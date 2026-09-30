@@ -13,6 +13,9 @@
 #include "libretro.h"
 
 #if defined(_WIN32)
+// Without this, windows.h's min/max macros shadow std::min/std::max used
+// below (loadSaveRam(), flushSaveRam()), breaking them at the call site.
+#define NOMINMAX
 #include <windows.h>
 #else
 #include <dlfcn.h>

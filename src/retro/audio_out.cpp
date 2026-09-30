@@ -3,6 +3,12 @@
 #include <algorithm>
 #include <cstdio>
 
+// miniaudio.h pulls in windows.h on Windows; without this its min/max macros
+// shadow std::min used below (drain()), breaking it at the call site.
+#if defined(_WIN32)
+#define NOMINMAX
+#endif
+
 #define MA_NO_DECODING
 #define MA_NO_ENCODING
 #define MA_NO_GENERATION
