@@ -15,7 +15,7 @@
 #include "ui/menu.h"
 
 // What a root-menu entry does (their order is kRootItems in app.cpp).
-enum class RootItem { PlayMedia, Tv, Tagesschau, News, Games, Ard, Zdf, Settings, Quit };
+enum class RootItem { PlayMedia, Tv, Tagesschau, News, Games, Ard, Zdf, ScreenTest, Settings, Quit };
 
 class Platform;
 struct CapturedInput;
@@ -97,6 +97,7 @@ private:
     GameFavorites,  // favorited ROMs, added from the browser/in-game menu (ToggleFavorite)
     PickSubsystemContent,  // picking the 2nd (3rd, ...) file of a subsystem game (PlaySubsystem)
     ControlMapping,  // Settings > Controls: rebinding keys/buttons live
+    ScreenTest,  // RootItem::ScreenTest: assets/test_pattern.png, full-screen
 };
     enum class MediaKind { Unknown, Video, Audio };
 
@@ -302,6 +303,9 @@ private:
     void openGameMenu();
     std::vector<SettingsRowDesc> buildGameMenuRows();
     void renderGameFrame(int width, int height);
+    // RootItem::ScreenTest: assets/test_pattern.png, stretched to fill the
+    // screen exactly (see testPatternTexture_).
+    void renderScreenTestFrame(int width, int height);
     void renderGameHud();
     void renderGameMenu();
     // A short message at the bottom of the screen (errors, "state saved").
@@ -343,6 +347,9 @@ private:
     // Platform::hasLaunchDisplaySetting()).
     bool launchOnTopScreen_ = true;
     bool hardwareDecoding_ = false;  // the platform's default until settings are loaded
+    // Playback OSD's Subtitles row (persisted); see MpvPlayer::
+    // setSubtitlesEnabled(). Mirrors mpv's own sub-visibility default.
+    bool subtitlesEnabled_ = true;
     std::vector<std::string> monitorChoiceNames_;
 
     // Text outline ("Outline"/"Outline R/G/B"/"Outline Strength" settings
@@ -363,6 +370,11 @@ private:
 
     unsigned int blitProgram_ = 0;
     unsigned int blitVao_ = 0;
+
+    // RootItem::ScreenTest: assets/test_pattern.png, decoded and uploaded
+    // once in init(); 0 if the file was missing (the screen then just stays
+    // black -- see renderScreenTestFrame()).
+    unsigned int testPatternTexture_ = 0;
 
     // Offscreen target video + ImGui composite into, so the CRT/color-grade
     // pass has one texture to post-process.

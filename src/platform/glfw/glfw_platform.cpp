@@ -9,6 +9,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 
 #include "input/keymap_persist.h"
@@ -18,6 +19,15 @@
 #ifdef __APPLE__
 #include "platform/glfw/macos_media_keys.h"
 #include "platform/glfw/macos_sleep_guard.h"
+#endif
+
+#if defined(_WIN32)
+// Without this, windows.h's min/max macros would shadow any std::min/
+// std::max used in this file or a header it pulls in (see the identical
+// guard in retro_core.cpp/audio_out.cpp, added after this exact collision
+// broke the Windows build there).
+#define NOMINMAX
+#include <windows.h>
 #endif
 
 GlfwPlatform::GlfwPlatform() : exeDir_(exeDir()) {}
@@ -229,6 +239,24 @@ std::vector<std::string> GlfwPlatform::coreDirs() const {
     dirs.push_back(PVM_DEV_CORES_DIR);
 #endif
     return dirs;
+}
+
+std::vector<std::string> GlfwPlatform::availableDrives() const {
+    std::vector<std::string> drives;
+#if defined(_WIN32)
+    // Fills `buf` with each drive's root path ("C:\", "D:\", ...) back to
+    // back, each NUL-terminated, with one more NUL after the last one --
+    // e.g. "C:\\0D:\\0\0". A drive letter with no media in it (an empty
+    // CD/DVD drive) still appears here; that's fine, FileBrowser::refresh()
+    // already tolerates a directory it can't list (just no entries), same
+    // as any other unreadable directory.
+    char buf[256];
+    const DWORD len = GetLogicalDriveStringsA(sizeof(buf), buf);
+    for (const char* p = buf; p < buf + len && *p != '\0'; p += std::strlen(p) + 1) {
+        drives.emplace_back(p);
+    }
+#endif
+    return drives;
 }
 
 bool GlfwPlatform::translateKeyName(std::string_view name, std::vector<input::InputEvent>& out) const {

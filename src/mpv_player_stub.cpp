@@ -54,6 +54,8 @@ void MpvPlayer::setVolume(double /*volumePercent*/) {}
 
 void MpvPlayer::setAspectOverride(const std::string& /*ratio*/) {}
 
+void MpvPlayer::setSubtitlesEnabled(bool /*enabled*/) {}
+
 bool MpvPlayer::videoDisplaySize(int& /*width*/, int& /*height*/) const {
     return false;
 }

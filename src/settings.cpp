@@ -162,6 +162,8 @@ bool loadSettings(const std::string& path, AppSettings& settings) {
             ok = parseBool(value, settings.launchOnTopScreen);
         } else if (key == "hardware_decoding") {
             ok = parseBool(value, settings.hardwareDecoding);
+        } else if (key == "subtitles_enabled") {
+            ok = parseBool(value, settings.subtitlesEnabled);
         } else if (key == "retro_scale") {
             ok = parseInt(value, settings.retroScaleIndex);
         } else if (key == "retro_aspect") {
@@ -237,6 +239,7 @@ bool saveSettings(const std::string& path, const AppSettings& settings) {
     file << "monitor_index=" << settings.monitorIndex << "\n";
     file << "launch_on_top_screen=" << (settings.launchOnTopScreen ? "true" : "false") << "\n";
     file << "hardware_decoding=" << (settings.hardwareDecoding ? "true" : "false") << "\n";
+    file << "subtitles_enabled=" << (settings.subtitlesEnabled ? "true" : "false") << "\n";
     file << "retro_scale=" << settings.retroScaleIndex << "\n";
     file << "retro_aspect=" << settings.retroAspectIndex << "\n";
     file << "retro_smooth=" << (settings.retroSmooth ? "true" : "false") << "\n";

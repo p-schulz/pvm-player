@@ -102,6 +102,19 @@ void FileBrowser::refresh() {
     const fs::path parent = current.parent_path();
     if (!parent.empty() && parent != current) {
         entries_.push_back({"..", parent.string(), /*isDirectory=*/true});
+    } else {
+        // At the top of this filesystem: e.g. on Windows, a drive's own
+        // root ("C:\") has no parent to ascend to, unlike POSIX's single
+        // "/" (there is nowhere else "up" from "/" either, but there is
+        // also nowhere else to go). Other drives (setAvailableDrives())
+        // fill the gap a ".." entry would otherwise leave, so switching
+        // drives is just one more step of the same "go up" navigation
+        // rather than a separate UI.
+        for (const std::string& drive : availableDrives_) {
+            if (fs::path(drive) != current) {
+                entries_.push_back({drive, drive, /*isDirectory=*/true});
+            }
+        }
     }
 
     if (pickerMode_) {

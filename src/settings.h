@@ -86,6 +86,11 @@ struct AppSettings {
     // Platform::defaultHardwareDecoding() for the default).
     bool hardwareDecoding = false;
 
+    // Show subtitles when the current file/stream has a track (mpv's
+    // sub-visibility; see MpvPlayer::hasSubtitles()/setSubtitlesEnabled()).
+    // Mirrors mpv's own default.
+    bool subtitlesEnabled = true;
+
     // Games (libretro cores): how the picture is scaled (App's kRetroScaleNames),
     // its aspect (kRetroAspectNames), smooth or sharp filtering, and where the
     // game browser was last.

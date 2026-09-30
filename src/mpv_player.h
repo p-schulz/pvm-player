@@ -79,6 +79,10 @@ public:
     // file's real aspect. Maps directly to mpv's video-aspect-override.
     void setAspectOverride(const std::string& ratio);
 
+    // Shows or hides subtitles (mpv's sub-visibility) without unselecting
+    // the track -- toggling back on shows the same one hasSubtitles() found.
+    void setSubtitlesEnabled(bool enabled);
+
     // The video's current effective display size in pixels -- i.e. after
     // any aspect-ratio override and pixel-aspect correction, so it's the
     // right thing to compare against the window size for crop math (see
@@ -100,6 +104,15 @@ public:
     // exists. Shown in the media info overlay, since a silent fallback to
     // software decoding is the classic way for playback to stutter.
     const std::string& hwdecCurrent() const { return hwdecCurrent_; }
+
+    // Whether the current file/stream has a subtitle track mpv could select
+    // (observed from "sid": non-"no" once mpv's sid=auto has picked one, so
+    // this also answers "did the container actually have one" -- a WebVTT
+    // HLS rendition or an extracted CEA-608 subchannel (see createCore())
+    // both surface here the same way). Independent of setSubtitlesEnabled():
+    // still true with subtitles toggled off, since the track is still
+    // selected, just not shown.
+    bool hasSubtitles() const { return hasSubtitles_; }
 
     bool isPaused() const { return paused_; }
     // True while mpv has paused itself to build up its network buffer (a
@@ -139,6 +152,7 @@ private:
     double duration_ = 0.0;
     std::string filename_;
     std::string hwdecCurrent_;
+    bool hasSubtitles_ = false;
     double pendingStartSeconds_ = 0.0;
 
     // Observed properties, cached so the main loop never has to ask the core.

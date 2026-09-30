@@ -292,6 +292,9 @@ if(ANDROID)
   )
   target_include_directories(pvm_player PRIVATE src)
   pvm_link_retro(pvm_player)
+  # stb_image.h: vendored single-header PNG decoder for the Screen Test
+  # pattern (assets/test_pattern.png) -- app.cpp is the only user.
+  target_include_directories(pvm_player PRIVATE ${CMAKE_SOURCE_DIR}/thirdparty/stb)
   target_link_libraries(pvm_player PRIVATE
     game-activity::game-activity_static
     imgui teletext_core input_android
@@ -316,6 +319,9 @@ else()
 
   target_include_directories(pvm_player PRIVATE src)
   pvm_link_retro(pvm_player)
+  # stb_image.h: vendored single-header PNG decoder for the Screen Test
+  # pattern (assets/test_pattern.png) -- app.cpp is the only user.
+  target_include_directories(pvm_player PRIVATE ${CMAKE_SOURCE_DIR}/thirdparty/stb)
   # Where scripts/fetch_cores.sh puts cores; searched by a build run from here.
   target_compile_definitions(pvm_player PRIVATE PVM_DEV_CORES_DIR="${CMAKE_SOURCE_DIR}/cores")
 

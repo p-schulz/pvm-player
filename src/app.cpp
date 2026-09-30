@@ -36,6 +36,13 @@
 #include "teletext/teletext_view.h"
 #include "ui/style.h"
 
+// stb_image: vendored single-header decoder, only used for the Screen Test
+// pattern (assets/test_pattern.png -- see init() and renderScreenTestFrame()).
+// PNG-only, since that's the only format any asset here needs decoded.
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#include <stb_image.h>
+
 namespace fs = std::filesystem;
 
 namespace {
@@ -252,9 +259,10 @@ const std::vector<std::string> kAspectRatioValues = {"no", "4:3", "5:4", "16:9",
 // zoom to fill, cropping overflow, no distortion). See App::renderFrame().
 // The root menu, top to bottom. Menu positions are looked up through this, so
 // reordering it is all it takes to reorder the menu.
-constexpr RootItem kRootItems[] = {RootItem::PlayMedia, RootItem::Tv,   RootItem::Tagesschau,
-                                   RootItem::News,      RootItem::Games, RootItem::Ard,
-                                   RootItem::Zdf,       RootItem::Settings, RootItem::Quit};
+constexpr RootItem kRootItems[] = {RootItem::PlayMedia, RootItem::Tv,       RootItem::Tagesschau,
+                                   RootItem::News,      RootItem::Games,    RootItem::Ard,
+                                   RootItem::Zdf,       RootItem::ScreenTest, RootItem::Settings,
+                                   RootItem::Quit};
 
 const char* rootItemLabel(RootItem item) {
     switch (item) {
@@ -265,6 +273,7 @@ const char* rootItemLabel(RootItem item) {
         case RootItem::Games: return "GAMES";
         case RootItem::Ard: return "ARD";
         case RootItem::Zdf: return "ZDF";
+        case RootItem::ScreenTest: return "SCREEN TEST";
         case RootItem::Settings: return "SETTINGS";
         case RootItem::Quit: return "QUIT";
     }
@@ -405,6 +414,10 @@ bool App::init(Platform& platform) {
         mediaRoots_ = std::move(roots);
     }
     monitorChoiceNames_ = platform.displayNames();
+    // Windows only in practice (see Platform::availableDrives()): lets every
+    // browsing session -- Play Media and all three folder pickers alike --
+    // offer other drives once it reaches the top of the current one.
+    fileBrowser_.setAvailableDrives(platform.availableDrives());
 
     autoCloseFrames_ = autoCloseFrameCount();
     exerciseControls_ = exerciseControlsRequested();
@@ -531,6 +544,8 @@ bool App::init(Platform& platform) {
     launchOnTopScreen_ = loadedSettings.launchOnTopScreen;
     hardwareDecoding_ = loadedSettings.hardwareDecoding;
     mpv_.setHardwareDecoding(hardwareDecoding_);
+    subtitlesEnabled_ = loadedSettings.subtitlesEnabled;
+    mpv_.setSubtitlesEnabled(subtitlesEnabled_);
     retroScaleIndex_ = std::clamp(loadedSettings.retroScaleIndex, 0, static_cast<int>(kRetroScaleNames.size()) - 1);
     retroAspectIndex_ =
         std::clamp(loadedSettings.retroAspectIndex, 0, static_cast<int>(kRetroAspectNames.size()) - 1);
@@ -563,6 +578,27 @@ bool App::init(Platform& platform) {
     if (!crtProgram_) {
         std::fprintf(stderr, "Failed to load CRT shader\n");
         return false;
+    }
+
+    // RootItem::ScreenTest's picture, decoded once up front like the shaders
+    // above. Missing/corrupt is not fatal -- the screen just stays black,
+    // same as a hardware-rendered game core before its first real frame.
+    {
+        const std::string testPatternPath = assetDir + "/assets/test_pattern.png";
+        int texW = 0, texH = 0, channels = 0;
+        if (unsigned char* pixels = stbi_load(testPatternPath.c_str(), &texW, &texH, &channels, 4)) {
+            glGenTextures(1, &testPatternTexture_);
+            glBindTexture(GL_TEXTURE_2D, testPatternTexture_);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, texW, texH, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+            stbi_image_free(pixels);
+        } else {
+            std::fprintf(stderr, "Failed to load test pattern image: %s\n", testPatternPath.c_str());
+        }
     }
 
     IMGUI_CHECKVERSION();
@@ -727,6 +763,7 @@ void App::saveCurrentSettings() const {
     settings.monitorIndex = monitorIndex_;
     settings.launchOnTopScreen = launchOnTopScreen_;
     settings.hardwareDecoding = hardwareDecoding_;
+    settings.subtitlesEnabled = subtitlesEnabled_;
     settings.retroScaleIndex = retroScaleIndex_;
     settings.retroAspectIndex = retroAspectIndex_;
     settings.retroSmooth = retroSmooth_;
@@ -1056,6 +1093,10 @@ void App::renderFrame() {
         renderGameFrame(width, height);
         return;
     }
+    if (screen_ == Screen::ScreenTest) {
+        renderScreenTestFrame(width, height);
+        return;
+    }
     if (screen_ != Screen::Playing) {
         return;
     }
@@ -1148,6 +1189,13 @@ void App::renderHud() {
         case Screen::Game:
             renderGameHud();
             break;
+        case Screen::ScreenTest:
+            // The test pattern is the whole screen, no HUD over it -- but
+            // ImGui::NewFrame() (frame()) still needs a matching Render()
+            // every frame, same as every other branch here.
+            ImGui::Render();
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+            break;
         case Screen::RootMenu:
         case Screen::TvMenu:
         case Screen::FileBrowser:
@@ -1203,6 +1251,13 @@ void App::renderPlaybackHud() {
             if (!mpv_.hwdecCurrent().empty()) {
                 drawOutlinedTextDisabled("DECODER: " + (mpv_.hwdecCurrent() == "no" ? std::string("SOFTWARE")
                                                                                      : mpv_.hwdecCurrent()));
+            }
+            // Only shown at all once mpv has found a track (see
+            // MpvPlayer::hasSubtitles()) -- absence of the line is "none",
+            // same convention as the decoder line above. ON/OFF beyond that
+            // reflects subtitlesEnabled_ (OSD's Subtitles row).
+            if (mpv_.hasSubtitles()) {
+                drawOutlinedTextDisabled(std::string("SUBTITLES: ") + (subtitlesEnabled_ ? "ON" : "OFF"));
             }
         }
 
@@ -2157,6 +2212,17 @@ std::vector<App::SettingsRowDesc> App::buildOsdRows() {
     };
     rows.push_back(aspectRow);
 
+    // Always offered, even before mpv has resolved whether the current file
+    // actually has a track (see MpvPlayer::hasSubtitles(), the HUD's
+    // SUBTITLES line) -- it's the persisted show/hide preference, not
+    // conditioned on any one file, same as e.g. HW Decoding in Settings.
+    SettingsRowDesc subtitlesRow;
+    subtitlesRow.type = SettingsRowType::Bool;
+    subtitlesRow.label = "SUBTITLES";
+    subtitlesRow.boolPtr = &subtitlesEnabled_;
+    subtitlesRow.onBoolChanged = [this]() { mpv_.setSubtitlesEnabled(subtitlesEnabled_); };
+    rows.push_back(subtitlesRow);
+
     SettingsRowDesc exitRow;
     exitRow.type = SettingsRowType::Action;
     exitRow.label = "EXIT";
@@ -2261,6 +2327,9 @@ void App::activateRootMenuItem(int index) {
                 break;
             }
             screen_ = Screen::GamesMenu;
+            break;
+        case RootItem::ScreenTest:
+            screen_ = Screen::ScreenTest;
             break;
         case RootItem::Settings:
             settingsSelectedRow_ = 0;
@@ -2528,6 +2597,19 @@ void App::handleInput(const input::InputEvent& event) {
                         screen_ = Screen::Settings;
                     }
                     break;
+                case Action::Back:
+                case Action::BackSoft:
+                    if (pressed) {
+                        screen_ = Screen::RootMenu;
+                    }
+                    break;
+                default:
+                    break;
+            }
+            break;
+
+        case Screen::ScreenTest:
+            switch (action) {
                 case Action::Back:
                 case Action::BackSoft:
                     if (pressed) {
@@ -3717,6 +3799,30 @@ void App::renderGameFrame(int width, int height) {
     glViewport(0, 0, width, height);
 }
 
+void App::renderScreenTestFrame(int width, int height) {
+    if (testPatternTexture_ == 0 || width <= 0 || height <= 0) {
+        return;  // missing/corrupt asset (see init()): leave the screen black
+    }
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, width, height);
+    glUseProgram(blitProgram_);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, testPatternTexture_);
+    glUniform1i(glGetUniformLocation(blitProgram_, "uTexture"), 0);
+    // "Filling the complete screen" is a plain stretch, no aspect-preserving
+    // letterbox -- unlike renderGameFrame() above, this always covers the
+    // full viewport. stb_image decodes rows top-first like a software core's
+    // frame (see Session::needsFlipY()), so the same vertical flip applies.
+    glUniform2f(glGetUniformLocation(blitProgram_, "uUvScale"), 1.0f, -1.0f);
+    glUniform2f(glGetUniformLocation(blitProgram_, "uUvOffset"), 0.0f, 1.0f);
+    glBindVertexArray(blitVao_);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glUseProgram(0);
+}
+
 void App::renderGameHud() {
     if (gameMenuVisible_) {
         renderGameMenu();
@@ -3834,6 +3940,10 @@ void App::shutdown() {
     if (blitProgram_) {
         glDeleteProgram(blitProgram_);
         blitProgram_ = 0;
+    }
+    if (testPatternTexture_) {
+        glDeleteTextures(1, &testPatternTexture_);
+        testPatternTexture_ = 0;
     }
     mpv_.shutdown();
 }

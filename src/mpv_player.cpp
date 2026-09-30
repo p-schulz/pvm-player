@@ -68,6 +68,15 @@ bool MpvPlayer::createCore() {
     // its second stream address). Harmless for local files, which never hit it.
     mpv_set_option_string(mpv_, "network-timeout", "15");
 
+    // LIVE TV's HLS streams carry captions one of two ways: a genuine WebVTT
+    // subtitle rendition (a #EXT-X-MEDIA:TYPE=SUBTITLES track in the master
+    // playlist) needs nothing extra -- mpv already auto-selects the first
+    // subtitle track it finds (sid=auto, the default) and shows it
+    // (sub-visibility=yes, also the default). A CEA-608 subchannel, though,
+    // is muxed into the video elementary stream itself as decoder side data,
+    // which ffmpeg only pulls out as a selectable subtitle track when asked.
+    mpv_set_option_string(mpv_, "vd-lavc-o", "extract_embedded_cea608=1");
+
 #if defined(__ANDROID__)
     // MediaCodec decodes in hardware and hands the frames back to be
     // uploaded like software ones. The zero-copy "mediacodec" mode renders to
@@ -119,6 +128,9 @@ bool MpvPlayer::createCore() {
     mpv_observe_property(mpv_, 0, "duration", MPV_FORMAT_DOUBLE);
     mpv_observe_property(mpv_, 0, "pause", MPV_FORMAT_FLAG);
     mpv_observe_property(mpv_, 0, "hwdec-current", MPV_FORMAT_STRING);
+    // "no" (mpv's own spelling) once resolved if the file has no subtitle
+    // track; a track id otherwise -- see MpvPlayer::hasSubtitles().
+    mpv_observe_property(mpv_, 0, "sid", MPV_FORMAT_STRING);
     mpv_observe_property(mpv_, 0, "dwidth", MPV_FORMAT_INT64);
     mpv_observe_property(mpv_, 0, "dheight", MPV_FORMAT_INT64);
     mpv_observe_property(mpv_, 0, "paused-for-cache", MPV_FORMAT_FLAG);
@@ -170,6 +182,7 @@ bool MpvPlayer::loadFile(const std::string& path, double startSeconds) {
         filename_ = path;
         paused_ = false;
         hwdecCurrent_.clear();
+        hasSubtitles_ = false;
         pendingStartSeconds_ = startSeconds;
         timePos_ = 0.0;
         duration_ = 0.0;
@@ -222,6 +235,10 @@ void MpvPlayer::pollEvents() {
                     if (!hwdecCurrent_.empty()) {
                         std::fprintf(stdout, "[mpv] decoder: %s\n", hwdecCurrent_.c_str());
                     }
+                } else if (prop->format == MPV_FORMAT_STRING && prop->data &&
+                           std::string(prop->name) == "sid") {
+                    const char* value = *static_cast<char**>(prop->data);
+                    hasSubtitles_ = value && std::string(value) != "no";
                 }
                 break;
             }
@@ -462,6 +479,7 @@ void MpvPlayer::stop() {
     checkMpvError(mpv_command_async(mpv_, kCommandReply, cmd), "stop");
     filename_.clear();
     hwdecCurrent_.clear();
+    hasSubtitles_ = false;
     pendingStartSeconds_ = 0.0;
 }
 
@@ -480,6 +498,15 @@ void MpvPlayer::setAspectOverride(const std::string& ratio) {
     const char* value = ratio.c_str();
     checkMpvError(mpv_set_property_async(mpv_, kSetPropertyReply, "video-aspect-override", MPV_FORMAT_STRING, &value),
                   "set video-aspect-override");
+}
+
+void MpvPlayer::setSubtitlesEnabled(bool enabled) {
+    if (!mpv_) {
+        return;
+    }
+    int flag = enabled ? 1 : 0;
+    checkMpvError(mpv_set_property_async(mpv_, kSetPropertyReply, "sub-visibility", MPV_FORMAT_FLAG, &flag),
+                  "set sub-visibility");
 }
 
 bool MpvPlayer::videoDisplaySize(int& width, int& height) const {

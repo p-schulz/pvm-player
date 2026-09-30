@@ -69,6 +69,9 @@ public:
     // <exe dir>/cores, PVM_CORES_DIR, and the source tree's cores/ folder
     // (where scripts/fetch_cores.sh puts them) in a development build.
     std::vector<std::string> coreDirs() const override;
+    // Windows only (real logic in glfw_platform.cpp, guarded by _WIN32);
+    // empty on macOS/Linux, same as the Platform default.
+    std::vector<std::string> availableDrives() const override;
 
     void setKeepAwake(bool on) override;
     void requestQuit() override;

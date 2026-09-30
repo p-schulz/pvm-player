@@ -26,6 +26,14 @@ public:
     // entry is never affected by this).
     void open(std::vector<std::string> roots, std::vector<std::string> extensions, bool showHidden);
 
+    // Other drives/volumes to offer once browsing reaches the top of the
+    // current one -- e.g. on Windows, where "C:\" has no parent directory
+    // to back out to the way POSIX's single "/" root does, so there needs
+    // to be some other way to reach "D:\" (see refresh()). Empty by default
+    // (nothing to offer on a single-root filesystem); the platform sets
+    // this once at startup from Platform::availableDrives().
+    void setAvailableDrives(std::vector<std::string> drives) { availableDrives_ = std::move(drives); }
+
     // Starts a directory-only "pick a folder" browsing session rooted at
     // `startDir`: no files are listed (only subfolders + the ".." parent
     // entry, same nested navigation as open()), and a synthetic "[Select
@@ -68,6 +76,7 @@ private:
     void refresh();
 
     std::vector<std::string> roots_;
+    std::vector<std::string> availableDrives_;
     std::vector<std::string> extensions_;
     std::vector<std::string> pathStack_;  // descended directories, full paths
     std::vector<Entry> entries_;

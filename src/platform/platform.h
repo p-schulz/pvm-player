@@ -120,6 +120,12 @@ public:
     virtual std::vector<std::string> coreDirs() const { return {dataDir() + "/cores"}; }
     // Media folders to browse when none were given explicitly.
     virtual std::vector<std::string> defaultMediaRoots() const = 0;
+    // Other drives/volumes to offer in the file browser once it reaches the
+    // top of the current one (see FileBrowser::setAvailableDrives()) --
+    // meaningful only on Windows ("C:\", "D:\", ...), where unlike POSIX's
+    // single "/" root there is no path that already leads from one to
+    // another. Empty (the default) everywhere else: nothing to offer.
+    virtual std::vector<std::string> availableDrives() const { return {}; }
 
     // Whether the app may read the user's media folders. Always true on
     // desktop; on Android it is the "all files access" permission, which the
